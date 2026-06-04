@@ -138,3 +138,16 @@ target("lab3")
     if is_plat("windows") then
         add_cxflags("/EHsc")
     end
+
+target("lab4")
+    set_kind("binary")
+    add_deps("lab-common")
+    add_deps("lab-scene")
+    add_packages("eigen")
+    add_packages("fcl")
+    add_headerfiles("src/VCX/Labs/FinalProject/*.h")
+    add_headerfiles("src/VCX/Labs/FinalProject/*.hpp")
+    add_files      ("src/VCX/Labs/FinalProject/*.cpp")
+    if is_plat("windows") then
+        add_cxflags("/EHsc")
+    end
