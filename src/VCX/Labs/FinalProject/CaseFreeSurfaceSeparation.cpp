@@ -7,21 +7,46 @@ namespace VCX::Labs::FluidSimulation {
         constexpr std::uint32_t SeparationPassConstantsBinding = 3;
 
         const std::vector<glm::vec3> BoundaryVertices = {
-            { -0.5f, -0.5f, -0.5f }, { 0.5f, -0.5f, -0.5f },
-            {  0.5f,  0.5f, -0.5f }, {-0.5f,  0.5f, -0.5f },
-            { -0.5f, -0.5f,  0.5f }, { 0.5f, -0.5f,  0.5f },
-            {  0.5f,  0.5f,  0.5f }, {-0.5f,  0.5f,  0.5f },
+            { -0.5f, -0.5f, -0.5f },
+            {  0.5f, -0.5f, -0.5f },
+            {  0.5f,  0.5f, -0.5f },
+            { -0.5f,  0.5f, -0.5f },
+            { -0.5f, -0.5f,  0.5f },
+            {  0.5f, -0.5f,  0.5f },
+            {  0.5f,  0.5f,  0.5f },
+            { -0.5f,  0.5f,  0.5f },
         };
 
         const std::vector<std::uint32_t> BoundaryIndices = {
-            0, 1, 1, 2, 2, 3, 3, 0,
-            4, 5, 5, 6, 6, 7, 7, 4,
-            0, 4, 1, 5, 2, 6, 3, 7,
+            0,
+            1,
+            1,
+            2,
+            2,
+            3,
+            3,
+            0,
+            4,
+            5,
+            5,
+            6,
+            6,
+            7,
+            7,
+            4,
+            0,
+            4,
+            1,
+            5,
+            2,
+            6,
+            3,
+            7,
         };
     }
 
     CaseFreeSurfaceSeparation::CaseFreeSurfaceSeparation(
-        std::initializer_list<Assets::ExampleScene> && scenes) :
+        std::initializer_list<Assets::ExampleScene> && scenes):
         _scenes(scenes),
         _program(Engine::GL::UniqueProgram({
             Engine::GL::SharedShader("assets/shaders/fluid.vert"),
@@ -55,18 +80,18 @@ namespace VCX::Labs::FluidSimulation {
         ImGui::Spacing();
         ImGui::TextWrapped(
             "Batty et al. Section 4: a water blob hits the left wall. "
-            "The KKT active set prevents negative pressure from suctioning "
-            "the free surface onto the wall.");
+            "A face-based active set switches between no-penetration contact "
+            "and a p = 0 separating surface.");
         if (ImGui::Checkbox("Wall Separation", &_simulation.enableWallSeparation))
             ResetSystem();
 
         ImGui::Text("Candidate cells: %d", _simulation.wallSeparationCandidates);
-        ImGui::Text("p = 0 clamps: %d", _simulation.wallSeparationClampedCells);
+        ImGui::Text("Separating wall cells: %d", _simulation.separatingWallCells);
         ImGui::Text("Separating wall faces: %d", _simulation.separatingWallFaces);
         ImGui::Text("Orange wall-contact particles: %d", _simulation.wallContactParticles);
         ImGui::Text("Average left-wall distance: %.3f", _simulation.averageLeftWallDistance);
         ImGui::Text("Active-set iterations: %d", _simulation.wallSeparationActiveSetIterations);
-        ImGui::Text("Min unconstrained p: %.5f", _simulation.minimumUnconstrainedPressure);
+        ImGui::Text("Min contact-solve p: %.5f", _simulation.minimumContactPressure);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
         ImGui::Checkbox("Highlight Wall Contact", &_simulation.highlightWallContact);
 
@@ -76,7 +101,7 @@ namespace VCX::Labs::FluidSimulation {
         ImGui::SliderInt("Pressure Iters", &_simulation.numPressureIters, 20, 300);
 
         const char * colorModes[] = { "Default", "Velocity", "Density", "Pressure" };
-        int colorMode = static_cast<int>(_simulation.m_colorMode);
+        int          colorMode    = static_cast<int>(_simulation.m_colorMode);
         if (ImGui::Combo("Color", &colorMode, colorModes, IM_ARRAYSIZE(colorModes)))
             _simulation.m_colorMode = static_cast<Final::Simulator::ColorMode>(colorMode);
     }
@@ -95,9 +120,9 @@ namespace VCX::Labs::FluidSimulation {
         _frame.Resize(desiredSize);
         _cameraManager.Update(_sceneObject.Camera);
 
-        float const aspect = float(desiredSize.first) / float(desiredSize.second);
+        float const     aspect     = float(desiredSize.first) / float(desiredSize.second);
         glm::mat4 const projection = _sceneObject.Camera.GetProjectionMatrix(aspect);
-        glm::mat4 const view = _sceneObject.Camera.GetViewMatrix();
+        glm::mat4 const view       = _sceneObject.Camera.GetViewMatrix();
         _sceneObject.PassConstantsBlock.Update(
             &Rendering::SceneObject::PassConstants::Projection, projection);
         _sceneObject.PassConstantsBlock.Update(
@@ -136,9 +161,9 @@ namespace VCX::Labs::FluidSimulation {
 
         glDisable(GL_DEPTH_TEST);
         return Common::CaseRenderResult {
-            .Fixed = false,
-            .Flipped = true,
-            .Image = _frame.GetColorAttachment(),
+            .Fixed     = false,
+            .Flipped   = true,
+            .Image     = _frame.GetColorAttachment(),
             .ImageSize = desiredSize,
         };
     }
@@ -151,6 +176,6 @@ namespace VCX::Labs::FluidSimulation {
         bool const enableWallSeparation = _simulation.enableWallSeparation;
         _simulation.setupScene(_resolution);
         _simulation.enableWallSeparation = enableWallSeparation;
-        _sphere = Engine::Model(Engine::Sphere(6, _simulation.m_particleRadius));
+        _sphere                          = Engine::Model(Engine::Sphere(6, _simulation.m_particleRadius));
     }
-}
+} // namespace VCX::Labs::FluidSimulation

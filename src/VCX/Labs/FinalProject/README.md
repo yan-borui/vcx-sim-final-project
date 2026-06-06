@@ -24,7 +24,7 @@ CaseFluid (UI/主循环，在 CaseCoupled.h/cpp)
 | **APICSimulator.h/cpp** | 继承 Simulator，实现 APIC 方法（比普通 PIC 更精确） |
 | **CGSimulator.h/cpp** | 继承 Simulator，用共轭梯度法替代 SOR 迭代求解压力 |
 | **SubgridSimulator.h/cpp** | Batty 论文的 MAC 面流体体积分数加权压力投影，保留小于单个网格的通道流动 |
-| **FreeSurfaceSeparationSimulator.h/cpp** | Batty 论文第 4 节壁面自然分离条件，使用非负压力 active-set 近似 KKT 约束 |
+| **FreeSurfaceSeparationSimulator.h/cpp** | Batty 论文第 4 节壁面自然分离条件，使用逐壁面 active-set 近似 KKT 互补条件 |
 | **RigidBody.h** | 刚体定义（位置、速度、旋转、SDF 距离查询） |
 | **CaseCoupled.h/cpp** | 主程序入口、UI界面、渲染循环、流体-刚体耦合的主逻辑 |
 | **CaseSubgrid.h/cpp** | 子网格精度流动 case 的独立 UI、场景和渲染逻辑 |
@@ -66,9 +66,15 @@ void SimulateTimestep(float const dt) {
 ## 自由液面自然分离 Case
 
 `Free-Surface Wall Separation` 对应论文第 4 节。标准固壁条件会把壁面
-法向速度固定为零，可能通过负压把自由液面吸附在墙上。开启
-`Wall Separation` 后，仅对同时邻接固体和空气的流体格施加
-`0 <= p` 约束；active-set 将需要负压的格子改为 `p = 0` 自由表面，
-并执行 `u dot n >= v_solid dot n`，允许流体离墙但禁止穿墙。演示采用
+法向速度固定为零，使自由液面无法自然离墙。开启 `Wall Separation`
+后，仅把同时邻接固体和空气的流体格视为候选区域。active-set 对每个
+候选壁面在 `p = 0` 的分离状态和无穿透接触状态之间切换，并检查
+`u dot n >= v_solid dot n` 以及接触冲量方向，允许流体离墙但禁止穿墙。演示采用
 接近论文 Figure 6 的薄片水团，默认将靠近左墙的粒子标成橙色，并显示
 贴墙粒子数和平均离墙距离，便于与关闭分离条件后的吸附结果对照。
+
+## 数值回归测试
+
+运行 `xmake build lab4-tests` 后执行生成的 `lab4-tests`。测试覆盖标准
+固壁无散投影、壁面分离/接触互补条件、长时间无穿透，以及半格宽通道中
+子网格权重与二值体素权重的行为差异。

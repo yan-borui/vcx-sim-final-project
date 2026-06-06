@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/Sparse>
@@ -17,35 +18,35 @@ namespace VCX::Labs::Final {
 
         constexpr std::array<FaceNeighbor, 6> FaceNeighbors {
             FaceNeighbor { { -1, 0, 0 }, { 0, 0, 0 }, 0, -1.0f },
-            FaceNeighbor { {  1, 0, 0 }, { 1, 0, 0 }, 0,  1.0f },
+            FaceNeighbor {  { 1, 0, 0 }, { 1, 0, 0 }, 0,  1.0f },
             FaceNeighbor { { 0, -1, 0 }, { 0, 0, 0 }, 1, -1.0f },
-            FaceNeighbor { { 0,  1, 0 }, { 0, 1, 0 }, 1,  1.0f },
+            FaceNeighbor {  { 0, 1, 0 }, { 0, 1, 0 }, 1,  1.0f },
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
-            FaceNeighbor { { 0, 0,  1 }, { 0, 0, 1 }, 2,  1.0f },
+            FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
     }
 
     void FreeSurfaceSeparationSimulator::setupScene(int res) {
         Simulator::setupScene(res);
 
-        m_body = nullptr;
-        gravity = { 0.0f, -9.81f, 0.0f };
-        m_fRatio = 0.97f;
-        numSubSteps = 2;
-        numParticleIters = 3;
-        numPressureIters = 120;
+        m_body            = nullptr;
+        gravity           = { 0.0f, -9.81f, 0.0f };
+        m_fRatio          = 0.97f;
+        numSubSteps       = 2;
+        numParticleIters  = 3;
+        numPressureIters  = 120;
         separateParticles = true;
-        compensateDrift = false;
+        compensateDrift   = false;
 
         setupSplashParticles();
-        wallSeparationCandidates = 0;
-        wallSeparationClampedCells = 0;
+        wallSeparationCandidates          = 0;
+        separatingWallCells               = 0;
         wallSeparationActiveSetIterations = 0;
-        separatingWallFaces = 0;
-        wallContactParticles = 0;
-        minimumUnconstrainedPressure = 0.0f;
-        pressureResidual = 0.0f;
-        averageLeftWallDistance = 0.0f;
+        separatingWallFaces               = 0;
+        wallContactParticles              = 0;
+        minimumContactPressure            = 0.0f;
+        pressureResidual                  = 0.0f;
+        averageLeftWallDistance           = 0.0f;
         updateWallContactDiagnostics();
     }
 
@@ -54,13 +55,13 @@ namespace VCX::Labs::Final {
         // front camera, matching the 2D comparison in Figure 6 of the paper.
         glm::vec3 const center { 0.12f, 0.16f, 0.0f };
         glm::vec3 const radius { 0.18f, 0.18f, 0.08f };
-        float const spacing = std::max(2.0f * m_particleRadius, 0.42f * m_h);
+        float const     spacing = std::max(2.0f * m_particleRadius, 0.42f * m_h);
 
         std::vector<glm::vec3> positions;
         for (float x = center.x - radius.x; x <= center.x + radius.x; x += spacing) {
             int const xLayer = int(std::round((x - center.x + radius.x) / spacing));
             for (float y = center.y - radius.y; y <= center.y + radius.y; y += spacing) {
-                int const yLayer = int(std::round((y - center.y + radius.y) / spacing));
+                int const   yLayer  = int(std::round((y - center.y + radius.y) / spacing));
                 float const zOffset = ((xLayer + yLayer) & 1) ? 0.5f * spacing : 0.0f;
                 for (float z = center.z - radius.z + zOffset; z <= center.z + radius.z; z += spacing) {
                     glm::vec3 const normalized = (glm::vec3(x, y, z) - center) / radius;
@@ -122,7 +123,7 @@ namespace VCX::Labs::Final {
 
     bool FreeSurfaceSeparationSimulator::isWallSeparationCandidate(glm::ivec3 const & cell) const {
         bool touchesSolid = false;
-        bool touchesAir = false;
+        bool touchesAir   = false;
 
         for (FaceNeighbor const & side : FaceNeighbors) {
             glm::ivec3 const neighbor = cell + side.CellOffset;
@@ -136,10 +137,10 @@ namespace VCX::Labs::Final {
     }
 
     void FreeSurfaceSeparationSimulator::solveIncompressibility(
-        int numIters,
+        int   numIters,
         float dt,
         float overRelaxation,
-        bool compensateDrift) {
+        bool  compensateDrift) {
         (void) dt;
         (void) overRelaxation;
         (void) compensateDrift;
@@ -155,12 +156,12 @@ namespace VCX::Labs::Final {
         }
 
         std::fill(m_p.begin(), m_p.end(), 0.0f);
-        wallSeparationCandidates = 0;
-        wallSeparationClampedCells = 0;
+        wallSeparationCandidates          = 0;
+        separatingWallCells               = 0;
         wallSeparationActiveSetIterations = 0;
-        separatingWallFaces = 0;
-        minimumUnconstrainedPressure = 0.0f;
-        pressureResidual = 0.0f;
+        separatingWallFaces               = 0;
+        minimumContactPressure            = 0.0f;
+        pressureResidual                  = 0.0f;
         if (rowToCell.empty())
             return;
 
@@ -171,44 +172,119 @@ namespace VCX::Labs::Final {
                 idx / (m_iCellX * m_iCellY));
         };
 
-        std::vector<char> candidate(rowToCell.size(), 0);
-        std::vector<char> activeDirichlet(rowToCell.size(), 0);
+        struct WallFace {
+            int   Row;
+            int   FaceIndex;
+            int   Direction;
+            float DivergenceSign;
+            float WallVelocity;
+            bool  Candidate;
+            bool  Contact;
+        };
+
+        std::vector<WallFace> wallFaces;
+        std::vector<int>      wallFaceForSide(rowToCell.size() * FaceNeighbors.size(), -1);
         for (int row = 0; row < int(rowToCell.size()); ++row) {
-            candidate[row] = isWallSeparationCandidate(decodeCell(rowToCell[row])) ? 1 : 0;
-            wallSeparationCandidates += candidate[row] ? 1 : 0;
+            glm::ivec3 const cell          = decodeCell(rowToCell[row]);
+            bool const       candidateCell = isWallSeparationCandidate(cell);
+            if (candidateCell)
+                ++wallSeparationCandidates;
+
+            for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
+                FaceNeighbor const & side     = FaceNeighbors[sideIndex];
+                glm::ivec3 const     neighbor = cell + side.CellOffset;
+                if (! isSolidCell(neighbor))
+                    continue;
+
+                glm::ivec3 const face = cell + side.FaceOffset;
+                wallFaceForSide[row * FaceNeighbors.size() + sideIndex] =
+                    int(wallFaces.size());
+                wallFaces.push_back(WallFace {
+                    .Row            = row,
+                    .FaceIndex      = gridOffset(face),
+                    .Direction      = side.Direction,
+                    .DivergenceSign = side.DivergenceSign,
+                    .WallVelocity   = 0.0f,
+                    .Candidate      = enableWallSeparation && candidateCell,
+                    .Contact        = true,
+                });
+            }
         }
 
-        Eigen::VectorXd pressure = Eigen::VectorXd::Zero(int(rowToCell.size()));
-        auto solveWithActiveSet = [&]() {
-            int const matrixSize = int(rowToCell.size());
-            Eigen::SparseMatrix<double> matrix(matrixSize, matrixSize);
+        std::vector<glm::vec3> const intermediateVelocity = m_vel;
+        Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
+        auto                         solveWithContacts    = [&]() {
+            int const                           matrixSize = int(rowToCell.size());
+            Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
             std::vector<Eigen::Triplet<double>> triplets;
             triplets.reserve(matrixSize * 7);
             Eigen::VectorXd rhs = Eigen::VectorXd::Zero(matrixSize);
 
+            bool hasDirichletBoundary = false;
+            for (int row = 0; row < matrixSize && ! hasDirichletBoundary; ++row) {
+                glm::ivec3 const cell = decodeCell(rowToCell[row]);
+                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
+                    FaceNeighbor const & side     = FaceNeighbors[sideIndex];
+                    glm::ivec3 const     neighbor = cell + side.CellOffset;
+                    int const            wallFaceIndex =
+                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
+                    if (wallFaceIndex >= 0) {
+                        WallFace const & wallFace = wallFaces[wallFaceIndex];
+                        if (wallFace.Candidate && ! wallFace.Contact) {
+                            hasDirichletBoundary = true;
+                            break;
+                        }
+                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                        hasDirichletBoundary = true;
+                        break;
+                    }
+                }
+            }
+
+            int const pinnedRow = hasDirichletBoundary ? -1 : 0;
             for (int row = 0; row < matrixSize; ++row) {
-                if (activeDirichlet[row]) {
+                if (row == pinnedRow) {
                     triplets.emplace_back(row, row, 1.0);
                     continue;
                 }
 
-                glm::ivec3 const cell = decodeCell(rowToCell[row]);
-                double diagonal = 0.0;
-                double divergence = 0.0;
-                for (FaceNeighbor const & side : FaceNeighbors) {
-                    glm::ivec3 const face = cell + side.FaceOffset;
-                    glm::ivec3 const neighbor = cell + side.CellOffset;
-                    int const faceIdx = gridOffset(face);
-                    divergence += side.DivergenceSign * double(m_vel[faceIdx][side.Direction]);
-                    diagonal += 1.0;
+                glm::ivec3 const cell       = decodeCell(rowToCell[row]);
+                double           diagonal   = 0.0;
+                double           divergence = 0.0;
+                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
+                    FaceNeighbor const & side     = FaceNeighbors[sideIndex];
+                    glm::ivec3 const     face     = cell + side.FaceOffset;
+                    glm::ivec3 const     neighbor = cell + side.CellOffset;
+                    int const            faceIdx  = gridOffset(face);
+                    int const            wallFaceIndex =
+                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
 
-                    if (! isSolidCell(neighbor) && m_type[gridOffset(neighbor)] == FLUID_CELL) {
+                    if (wallFaceIndex >= 0) {
+                        WallFace const & wallFace = wallFaces[wallFaceIndex];
+                        float const      velocity =
+                            wallFace.Candidate && ! wallFace.Contact
+                            ? intermediateVelocity[faceIdx][side.Direction]
+                            : wallFace.WallVelocity;
+                        divergence += side.DivergenceSign * double(velocity);
+                        if (wallFace.Candidate && ! wallFace.Contact)
+                            diagonal += 1.0;
+                        continue;
+                    }
+
+                    divergence += side.DivergenceSign
+                        * double(intermediateVelocity[faceIdx][side.Direction]);
+                    diagonal += 1.0;
+                    if (m_type[gridOffset(neighbor)] == FLUID_CELL) {
                         int const neighborRow = cellToRow[gridOffset(neighbor)];
-                        if (neighborRow >= 0 && ! activeDirichlet[neighborRow])
+                        if (neighborRow >= 0 && neighborRow != pinnedRow)
                             triplets.emplace_back(row, neighborRow, -1.0);
                     }
                 }
 
+                if (diagonal <= 1e-8) {
+                    diagonal   = 1.0;
+                    divergence = 0.0;
+                }
                 triplets.emplace_back(row, row, diagonal);
                 rhs[row] = -divergence;
             }
@@ -217,38 +293,87 @@ namespace VCX::Labs::Final {
             Eigen::ConjugateGradient<
                 Eigen::SparseMatrix<double>,
                 Eigen::Lower | Eigen::Upper,
-                Eigen::IncompleteCholesky<double>> solver;
+                Eigen::IncompleteCholesky<double>>
+                solver;
             solver.setMaxIterations(std::max(numIters, 1));
             solver.setTolerance(1e-5);
             solver.compute(matrix);
-            pressure = solver.solve(rhs);
-            pressureResidual = float(solver.error());
+            if (solver.info() == Eigen::Success)
+                pressure = solver.solve(rhs);
+            if (solver.info() == Eigen::Success && pressure.allFinite()) {
+                pressureResidual = float(solver.error());
+            } else {
+                pressure.setZero();
+                pressureResidual = std::numeric_limits<float>::infinity();
+            }
 
-            for (int row = 0; row < int(activeDirichlet.size()); ++row) {
-                if (activeDirichlet[row])
-                    pressure[row] = 0.0;
+            m_vel = intermediateVelocity;
+            for (WallFace const & wallFace : wallFaces) {
+                if (! wallFace.Candidate || wallFace.Contact)
+                    m_vel[wallFace.FaceIndex][wallFace.Direction] =
+                        wallFace.WallVelocity;
+            }
+
+            for (int row = 0; row < matrixSize; ++row) {
+                glm::ivec3 const cell         = decodeCell(rowToCell[row]);
+                float const      cellPressure = float(pressure[row]);
+                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
+                    FaceNeighbor const & side    = FaceNeighbors[sideIndex];
+                    glm::ivec3 const     face    = cell + side.FaceOffset;
+                    int const            faceIdx = gridOffset(face);
+                    int const            wallFaceIndex =
+                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
+                    if (wallFaceIndex >= 0) {
+                        WallFace const & wallFace = wallFaces[wallFaceIndex];
+                        if (! wallFace.Candidate || wallFace.Contact)
+                            continue;
+                    }
+                    m_vel[faceIdx][side.Direction] +=
+                        side.DivergenceSign * cellPressure;
+                }
             }
         };
 
-        bool changedActiveSet = false;
+        bool      changedActiveSet       = false;
         int const maxActiveSetIterations = enableWallSeparation
-            ? std::min<int>(32, int(rowToCell.size()) + 1)
+            ? std::min<int>(64, int(wallFaces.size()) + 1)
             : 1;
         for (int iter = 0; iter < maxActiveSetIterations; ++iter) {
-            solveWithActiveSet();
+            solveWithContacts();
             wallSeparationActiveSetIterations = iter + 1;
 
             if (iter == 0 && pressure.size() > 0)
-                minimumUnconstrainedPressure = float(pressure.minCoeff());
+                minimumContactPressure = float(pressure.minCoeff());
 
             changedActiveSet = false;
             if (! enableWallSeparation)
                 break;
 
-            for (int row = 0; row < int(rowToCell.size()); ++row) {
-                if (candidate[row] && ! activeDirichlet[row] && pressure[row] < -1e-5) {
-                    activeDirichlet[row] = 1;
+            for (WallFace & wallFace : wallFaces) {
+                if (! wallFace.Candidate)
+                    continue;
+
+                float const separationSpeed =
+                    -wallFace.DivergenceSign
+                    * (m_vel[wallFace.FaceIndex][wallFace.Direction]
+                       - wallFace.WallVelocity);
+                if (! wallFace.Contact && separationSpeed < -1e-5f) {
+                    wallFace.Contact = true;
                     changedActiveSet = true;
+                    continue;
+                }
+
+                if (wallFace.Contact) {
+                    float const freeVelocity =
+                        intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                        + wallFace.DivergenceSign * float(pressure[wallFace.Row]);
+                    float const freeSeparationSpeed =
+                        -wallFace.DivergenceSign
+                        * (freeVelocity - wallFace.WallVelocity);
+                    if (freeSeparationSpeed > 1e-5f) {
+                        wallFace.Contact = false;
+                        changedActiveSet = true;
+                    }
                 }
             }
             if (! changedActiveSet)
@@ -256,71 +381,36 @@ namespace VCX::Labs::Final {
         }
 
         if (changedActiveSet) {
-            solveWithActiveSet();
+            solveWithContacts();
             ++wallSeparationActiveSetIterations;
+        }
+
+        std::vector<char> separatingCell(rowToCell.size(), 0);
+        separatingWallFaces = 0;
+        for (WallFace const & wallFace : wallFaces) {
+            if (! wallFace.Candidate || wallFace.Contact)
+                continue;
+            separatingCell[wallFace.Row] = 1;
+            float const separationSpeed =
+                -wallFace.DivergenceSign
+                * (m_vel[wallFace.FaceIndex][wallFace.Direction]
+                   - wallFace.WallVelocity);
+            if (separationSpeed > 1e-5f)
+                ++separatingWallFaces;
         }
 
         for (int row = 0; row < int(rowToCell.size()); ++row) {
             int const idx = rowToCell[row];
-            m_p[idx] = float(pressure[row]);
-            wallSeparationClampedCells += activeDirichlet[row] ? 1 : 0;
-        }
-
-        for (int row = 0; row < int(rowToCell.size()); ++row) {
-            glm::ivec3 const cell = decodeCell(rowToCell[row]);
-            float const cellPressure = float(pressure[row]);
-            for (FaceNeighbor const & side : FaceNeighbors) {
-                glm::ivec3 const face = cell + side.FaceOffset;
-                int const faceIdx = gridOffset(face);
-                m_vel[faceIdx][side.Direction] += side.DivergenceSign * cellPressure;
-            }
-        }
-
-        enforceWallVelocityCondition();
-    }
-
-    void FreeSurfaceSeparationSimulator::enforceWallVelocityCondition() {
-        separatingWallFaces = 0;
-        for (int idx = 0; idx < m_iNumCells; ++idx) {
-            if (m_type[idx] != FLUID_CELL)
-                continue;
-
-            glm::ivec3 const cell {
-                idx % m_iCellX,
-                (idx / m_iCellX) % m_iCellY,
-                idx / (m_iCellX * m_iCellY),
-            };
-
-            for (FaceNeighbor const & side : FaceNeighbors) {
-                glm::ivec3 const neighbor = cell + side.CellOffset;
-                if (! isSolidCell(neighbor))
-                    continue;
-
-                glm::ivec3 const face = cell + side.FaceOffset;
-                float & velocity = m_vel[gridOffset(face)][side.Direction];
-                if (! enableWallSeparation) {
-                    velocity = 0.0f;
-                    continue;
-                }
-
-                // The solid normal points into the fluid. Negative relative normal
-                // velocity penetrates the wall; positive velocity is free separation.
-                if (side.DivergenceSign < 0.0f)
-                    velocity = std::max(velocity, 0.0f);
-                else
-                    velocity = std::min(velocity, 0.0f);
-
-                if (std::abs(velocity) > 1e-5f)
-                    ++separatingWallFaces;
-            }
+            m_p[idx]      = float(pressure[row]);
+            separatingWallCells += separatingCell[row] ? 1 : 0;
         }
     }
 
     void FreeSurfaceSeparationSimulator::updateWallContactDiagnostics() {
-        float const leftWall = -0.5f + m_h;
+        float const leftWall        = -0.5f + m_h;
         float const contactDistance = 2.0f * m_h;
-        wallContactParticles = 0;
-        averageLeftWallDistance = 0.0f;
+        wallContactParticles        = 0;
+        averageLeftWallDistance     = 0.0f;
 
         for (int particle = 0; particle < m_iNumSpheres; ++particle) {
             float const distance = std::max(m_particlePos[particle].x - leftWall, 0.0f);
@@ -335,4 +425,4 @@ namespace VCX::Labs::Final {
         if (m_iNumSpheres > 0)
             averageLeftWallDistance /= float(m_iNumSpheres);
     }
-}
+} // namespace VCX::Labs::Final

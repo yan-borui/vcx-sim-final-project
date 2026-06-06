@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/Sparse>
@@ -17,36 +18,38 @@ namespace VCX::Labs::Final {
 
         constexpr std::array<FaceNeighbor, 6> FaceNeighbors {
             FaceNeighbor { { -1, 0, 0 }, { 0, 0, 0 }, 0, -1.0f },
-            FaceNeighbor { {  1, 0, 0 }, { 1, 0, 0 }, 0,  1.0f },
+            FaceNeighbor {  { 1, 0, 0 }, { 1, 0, 0 }, 0,  1.0f },
             FaceNeighbor { { 0, -1, 0 }, { 0, 0, 0 }, 1, -1.0f },
-            FaceNeighbor { { 0,  1, 0 }, { 0, 1, 0 }, 1,  1.0f },
+            FaceNeighbor {  { 0, 1, 0 }, { 0, 1, 0 }, 1,  1.0f },
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
-            FaceNeighbor { { 0, 0,  1 }, { 0, 0, 1 }, 2,  1.0f },
+            FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
     }
 
     void SubgridSimulator::setupScene(int res) {
         Simulator::setupScene(res);
 
-        gravity = { 6.0f, 0.0f, 0.0f };
-        m_fRatio = 0.9f;
-        numPressureIters = 120;
+        gravity           = { 6.0f, 0.0f, 0.0f };
+        m_fRatio          = 0.9f;
+        numPressureIters  = 120;
         separateParticles = false;
-        compensateDrift = false;
+        compensateDrift   = false;
 
         setupChannelParticles();
 
         for (auto & fractions : _faceFluidFraction)
             fractions.assign(m_iNumCells, 0.0f);
+        pressureResidual       = 0.0f;
+        pressureSolveSucceeded = true;
         updateFaceFluidFractions();
     }
 
     void SubgridSimulator::setupChannelParticles() {
-        float const wallMin = -0.5f + m_h;
-        float const wallMax =  0.5f - m_h;
-        float const spacingX = 0.50f * m_h;
-        float const spacingY = 0.46f * m_h;
-        float const spacingZ = 0.50f * m_h;
+        float const wallMin    = -0.5f + m_h;
+        float const wallMax    = 0.5f - m_h;
+        float const spacingX   = 0.50f * m_h;
+        float const spacingY   = 0.46f * m_h;
+        float const spacingZ   = 0.50f * m_h;
         float const sourceMaxX = m_body
             ? m_body->position.x - 0.5f * m_body->dim.x - 0.75f * m_h
             : -0.05f;
@@ -55,7 +58,7 @@ namespace VCX::Labs::Final {
         for (float x = wallMin + m_particleRadius; x <= sourceMaxX; x += spacingX) {
             int const xLayer = int(std::round((x - wallMin) / spacingX));
             for (float y = wallMin + m_particleRadius; y <= wallMax - m_particleRadius; y += spacingY) {
-                int const yLayer = int(std::round((y - wallMin) / spacingY));
+                int const   yLayer  = int(std::round((y - wallMin) / spacingY));
                 float const zOffset = ((xLayer + yLayer) & 1) ? 0.25f * spacingZ : 0.0f;
                 for (float z = wallMin + m_particleRadius + zOffset; z <= wallMax - m_particleRadius; z += spacingZ) {
                     glm::vec3 const position { x, y, z };
@@ -107,10 +110,10 @@ namespace VCX::Labs::Final {
             return 1.0f;
 
         glm::vec3 offset(0.5f);
-        offset[dir] = 0.0f;
-        glm::vec3 const center = (glm::vec3(face) + offset) * m_h - glm::vec3(0.5f);
-        int const sampleCount = std::max(volumeSamplesPerAxis, 1);
-        int fluidSamples = 0;
+        offset[dir]                  = 0.0f;
+        glm::vec3 const center       = (glm::vec3(face) + offset) * m_h - glm::vec3(0.5f);
+        int const       sampleCount  = std::clamp(volumeSamplesPerAxis, 1, 16);
+        int             fluidSamples = 0;
 
         for (int x = 0; x < sampleCount; ++x) {
             for (int y = 0; y < sampleCount; ++y) {
@@ -130,16 +133,16 @@ namespace VCX::Labs::Final {
     }
 
     void SubgridSimulator::updateFaceFluidFractions() {
-        partiallyOpenFaceCount = 0;
+        partiallyOpenFaceCount  = 0;
         minimumOpenFaceFraction = 1.0f;
 
         for (int k = 0; k < m_iCellZ; ++k) {
             for (int j = 0; j < m_iCellY; ++j) {
                 for (int i = 0; i < m_iCellX; ++i) {
                     glm::ivec3 const face { i, j, k };
-                    int const idx = index2GridOffset(face);
+                    int const        idx = index2GridOffset(face);
                     for (int dir = 0; dir < 3; ++dir) {
-                        float const fraction = estimateFaceFluidFraction(face, dir);
+                        float const fraction         = estimateFaceFluidFraction(face, dir);
                         _faceFluidFraction[dir][idx] = fraction;
                         if (fraction > 0.0f && fraction < 1.0f) {
                             ++partiallyOpenFaceCount;
@@ -162,10 +165,10 @@ namespace VCX::Labs::Final {
     }
 
     void SubgridSimulator::solveIncompressibility(
-        int numIters,
+        int   numIters,
         float dt,
         float overRelaxation,
-        bool compensateDrift) {
+        bool  compensateDrift) {
         (void) dt;
         (void) overRelaxation;
         (void) compensateDrift;
@@ -175,7 +178,12 @@ namespace VCX::Labs::Final {
         matrixToCell.reserve(m_iNumCells / 3);
 
         for (int idx = 0; idx < m_iNumCells; ++idx) {
-            if (m_type[idx] == FLUID_CELL) {
+            glm::ivec3 const cell {
+                idx % m_iCellX,
+                (idx / m_iCellX) % m_iCellY,
+                idx / (m_iCellX * m_iCellY),
+            };
+            if (m_type[idx] == FLUID_CELL && ! isSolidPressureCell(cell)) {
                 cellToMatrix[idx] = int(matrixToCell.size());
                 matrixToCell.push_back(idx);
             }
@@ -183,30 +191,32 @@ namespace VCX::Labs::Final {
 
         int const matrixSize = int(matrixToCell.size());
         std::fill(m_p.begin(), m_p.end(), 0.0f);
-        m_feedbackForce = glm::vec3(0.0f);
-        m_feedbackTorque = glm::vec3(0.0f);
+        m_feedbackForce        = glm::vec3(0.0f);
+        m_feedbackTorque       = glm::vec3(0.0f);
+        pressureResidual       = 0.0f;
+        pressureSolveSucceeded = true;
         if (matrixSize == 0)
             return;
 
-        Eigen::SparseMatrix<double> matrix(matrixSize, matrixSize);
+        Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
         std::vector<Eigen::Triplet<double>> triplets;
         triplets.reserve(matrixSize * 7);
         Eigen::VectorXd rhs = Eigen::VectorXd::Zero(matrixSize);
 
         for (int row = 0; row < matrixSize; ++row) {
-            int const idx = matrixToCell[row];
+            int const        idx = matrixToCell[row];
             glm::ivec3 const cell {
                 idx % m_iCellX,
                 (idx / m_iCellX) % m_iCellY,
                 idx / (m_iCellX * m_iCellY),
             };
 
-            double diagonal = 0.0;
+            double diagonal           = 0.0;
             double weightedDivergence = 0.0;
             for (FaceNeighbor const & side : FaceNeighbors) {
-                glm::ivec3 const face = cell + side.FaceOffset;
-                int const faceIdx = index2GridOffset(face);
-                float const weight = faceWeight(side.Direction, faceIdx);
+                glm::ivec3 const face     = cell + side.FaceOffset;
+                int const        faceIdx  = index2GridOffset(face);
+                float const      weight   = faceWeight(side.Direction, faceIdx);
                 glm::ivec3 const neighbor = cell + side.CellOffset;
 
                 if (weight <= 1e-6f || isSolidPressureCell(neighbor)) {
@@ -218,14 +228,14 @@ namespace VCX::Labs::Final {
                     * double(weight) * double(m_vel[faceIdx][side.Direction]);
                 diagonal += weight;
 
-                int const neighborIdx = index2GridOffset(neighbor);
+                int const neighborIdx    = index2GridOffset(neighbor);
                 int const neighborColumn = cellToMatrix[neighborIdx];
                 if (neighborColumn >= 0)
                     triplets.emplace_back(row, neighborColumn, -double(weight));
             }
 
             if (diagonal <= 1e-8) {
-                diagonal = 1.0;
+                diagonal           = 1.0;
                 weightedDivergence = 0.0;
             }
             triplets.emplace_back(row, row, diagonal);
@@ -236,11 +246,21 @@ namespace VCX::Labs::Final {
         Eigen::ConjugateGradient<
             Eigen::SparseMatrix<double>,
             Eigen::Lower | Eigen::Upper,
-            Eigen::IncompleteCholesky<double>> solver;
+            Eigen::IncompleteCholesky<double>>
+            solver;
         solver.setMaxIterations(std::max(numIters, 1));
         solver.setTolerance(1e-5);
         solver.compute(matrix);
-        Eigen::VectorXd const pressure = solver.solve(rhs);
+        Eigen::VectorXd pressure = Eigen::VectorXd::Zero(matrixSize);
+        if (solver.info() == Eigen::Success)
+            pressure = solver.solve(rhs);
+        pressureSolveSucceeded =
+            solver.info() == Eigen::Success && pressure.allFinite();
+        if (! pressureSolveSucceeded) {
+            pressureResidual = std::numeric_limits<float>::infinity();
+            return;
+        }
+        pressureResidual = float(solver.error());
 
         for (int row = 0; row < matrixSize; ++row)
             m_p[matrixToCell[row]] = float(pressure[row]);
@@ -248,7 +268,7 @@ namespace VCX::Labs::Final {
         // Each pressure contributes to its six surrounding MAC faces. Adjacent
         // pressure contributions combine into the usual finite-difference gradient.
         for (int row = 0; row < matrixSize; ++row) {
-            int const idx = matrixToCell[row];
+            int const        idx = matrixToCell[row];
             glm::ivec3 const cell {
                 idx % m_iCellX,
                 (idx / m_iCellX) % m_iCellY,
@@ -257,8 +277,8 @@ namespace VCX::Labs::Final {
             float const pressureValue = m_p[idx];
 
             for (FaceNeighbor const & side : FaceNeighbors) {
-                glm::ivec3 const face = cell + side.FaceOffset;
-                int const faceIdx = index2GridOffset(face);
+                glm::ivec3 const face     = cell + side.FaceOffset;
+                int const        faceIdx  = index2GridOffset(face);
                 glm::ivec3 const neighbor = cell + side.CellOffset;
                 if (faceWeight(side.Direction, faceIdx) <= 1e-6f || isSolidPressureCell(neighbor))
                     continue;
@@ -266,4 +286,4 @@ namespace VCX::Labs::Final {
             }
         }
     }
-}
+} // namespace VCX::Labs::Final

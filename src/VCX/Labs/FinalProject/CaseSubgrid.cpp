@@ -7,33 +7,95 @@ namespace VCX::Labs::FluidSimulation {
         constexpr std::uint32_t SubgridPassConstantsBinding = 2;
 
         const std::vector<glm::vec3> BoundaryVertices = {
-            { -0.5f, -0.5f, -0.5f }, { 0.5f, -0.5f, -0.5f },
-            {  0.5f,  0.5f, -0.5f }, {-0.5f,  0.5f, -0.5f },
-            { -0.5f, -0.5f,  0.5f }, { 0.5f, -0.5f,  0.5f },
-            {  0.5f,  0.5f,  0.5f }, {-0.5f,  0.5f,  0.5f },
+            { -0.5f, -0.5f, -0.5f },
+            {  0.5f, -0.5f, -0.5f },
+            {  0.5f,  0.5f, -0.5f },
+            { -0.5f,  0.5f, -0.5f },
+            { -0.5f, -0.5f,  0.5f },
+            {  0.5f, -0.5f,  0.5f },
+            {  0.5f,  0.5f,  0.5f },
+            { -0.5f,  0.5f,  0.5f },
         };
 
         const std::vector<std::uint32_t> BoundaryIndices = {
-            0, 1, 1, 2, 2, 3, 3, 0,
-            4, 5, 5, 6, 6, 7, 7, 4,
-            0, 4, 1, 5, 2, 6, 3, 7,
+            0,
+            1,
+            1,
+            2,
+            2,
+            3,
+            3,
+            0,
+            4,
+            5,
+            5,
+            6,
+            6,
+            7,
+            7,
+            4,
+            0,
+            4,
+            1,
+            5,
+            2,
+            6,
+            3,
+            7,
         };
 
         const std::vector<glm::vec3> BoxVertices = {
-            { -0.5f, -0.5f,  0.5f }, { 0.5f, -0.5f,  0.5f },
-            {  0.5f,  0.5f,  0.5f }, {-0.5f,  0.5f,  0.5f },
-            { -0.5f, -0.5f, -0.5f }, { 0.5f, -0.5f, -0.5f },
-            {  0.5f,  0.5f, -0.5f }, {-0.5f,  0.5f, -0.5f },
+            { -0.5f, -0.5f,  0.5f },
+            {  0.5f, -0.5f,  0.5f },
+            {  0.5f,  0.5f,  0.5f },
+            { -0.5f,  0.5f,  0.5f },
+            { -0.5f, -0.5f, -0.5f },
+            {  0.5f, -0.5f, -0.5f },
+            {  0.5f,  0.5f, -0.5f },
+            { -0.5f,  0.5f, -0.5f },
         };
 
         const std::vector<std::uint32_t> BoxIndices = {
-            0, 1, 2, 0, 2, 3, 1, 5, 6, 1, 6, 2,
-            5, 4, 7, 5, 7, 6, 4, 0, 3, 4, 3, 7,
-            3, 2, 6, 3, 6, 7, 4, 5, 1, 4, 1, 0,
+            0,
+            1,
+            2,
+            0,
+            2,
+            3,
+            1,
+            5,
+            6,
+            1,
+            6,
+            2,
+            5,
+            4,
+            7,
+            5,
+            7,
+            6,
+            4,
+            0,
+            3,
+            4,
+            3,
+            7,
+            3,
+            2,
+            6,
+            3,
+            6,
+            7,
+            4,
+            5,
+            1,
+            4,
+            1,
+            0,
         };
     }
 
-    CaseSubgrid::CaseSubgrid(std::initializer_list<Assets::ExampleScene> && scenes) :
+    CaseSubgrid::CaseSubgrid(std::initializer_list<Assets::ExampleScene> && scenes):
         _scenes(scenes),
         _program(Engine::GL::UniqueProgram({
             Engine::GL::SharedShader("assets/shaders/fluid.vert"),
@@ -79,6 +141,7 @@ namespace VCX::Labs::FluidSimulation {
 
         ImGui::Text("Cut faces: %d", _simulation.partiallyOpenFaceCount);
         ImGui::Text("Min fraction: %.3f", _simulation.minimumOpenFaceFraction);
+        ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
 
         ImGui::Spacing();
         ImGui::SliderFloat("Time Step", &_timeStep, 0.001f, 0.03f, "%.3f");
@@ -86,7 +149,7 @@ namespace VCX::Labs::FluidSimulation {
         ImGui::SliderInt("Pressure Iters", &_simulation.numPressureIters, 20, 300);
 
         const char * colorModes[] = { "Default", "Velocity", "Density", "Pressure" };
-        int colorMode = static_cast<int>(_simulation.m_colorMode);
+        int          colorMode    = static_cast<int>(_simulation.m_colorMode);
         if (ImGui::Combo("Color", &colorMode, colorModes, IM_ARRAYSIZE(colorModes)))
             _simulation.m_colorMode = static_cast<Final::Simulator::ColorMode>(colorMode);
     }
@@ -105,9 +168,9 @@ namespace VCX::Labs::FluidSimulation {
         _frame.Resize(desiredSize);
         _cameraManager.Update(_sceneObject.Camera);
 
-        float const aspect = float(desiredSize.first) / float(desiredSize.second);
+        float const     aspect     = float(desiredSize.first) / float(desiredSize.second);
         glm::mat4 const projection = _sceneObject.Camera.GetProjectionMatrix(aspect);
-        glm::mat4 const view = _sceneObject.Camera.GetViewMatrix();
+        glm::mat4 const view       = _sceneObject.Camera.GetViewMatrix();
         _sceneObject.PassConstantsBlock.Update(&Rendering::SceneObject::PassConstants::Projection, projection);
         _sceneObject.PassConstantsBlock.Update(&Rendering::SceneObject::PassConstants::View, view);
         _sceneObject.PassConstantsBlock.Update(&Rendering::SceneObject::PassConstants::ViewPosition, _sceneObject.Camera.Eye);
@@ -152,9 +215,9 @@ namespace VCX::Labs::FluidSimulation {
         glDisable(GL_DEPTH_TEST);
 
         return Common::CaseRenderResult {
-            .Fixed = false,
-            .Flipped = true,
-            .Image = _frame.GetColorAttachment(),
+            .Fixed     = false,
+            .Flipped   = true,
+            .Image     = _frame.GetColorAttachment(),
             .ImageSize = desiredSize,
         };
     }
@@ -178,4 +241,4 @@ namespace VCX::Labs::FluidSimulation {
         _simulation.setupScene(_resolution);
         _sphere = Engine::Model(Engine::Sphere(6, _simulation.m_particleRadius));
     }
-}
+} // namespace VCX::Labs::FluidSimulation
