@@ -80,6 +80,13 @@ namespace VCX::Labs::FluidSimulation {
             _useAPIC = false;
             ResetSystem();
         }
+        if (! _useAPIC && ! _useCG) {
+            ImGui::Separator();
+            ImGui::Text("Variational boundary projection");
+            ImGui::Checkbox("Sub-grid weights", &_simulation.useSubgridWeights);
+            ImGui::Checkbox("Wall separation", &_simulation.enableWallSeparation);
+            ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
+        }
         ImGui::SliderFloat("Time Step", &_dt, 0.001f, 0.03f);
         ImGui::Separator();
         ImGui::Text("Visualization Enhancement");

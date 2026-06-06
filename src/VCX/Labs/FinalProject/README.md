@@ -7,7 +7,8 @@ Simulator (基类，在 FluidSimulator.h/cpp)
 ├── APICSimulator     (在 APICSimulator.h/cpp)
 ├── CGSimulator       (在 CGSimulator.h/cpp)
 ├── SubgridSimulator  (在 SubgridSimulator.h/cpp)
-└── FreeSurfaceSeparationSimulator (在 FreeSurfaceSeparationSimulator.h/cpp)
+├── FreeSurfaceSeparationSimulator (在 FreeSurfaceSeparationSimulator.h/cpp)
+└── VariationalCoupledSimulator (在 VariationalCoupledSimulator.h/cpp)
 
 RigidBody (独立结构体，在 RigidBody.h)
 
@@ -25,6 +26,7 @@ CaseFluid (UI/主循环，在 CaseCoupled.h/cpp)
 | **CGSimulator.h/cpp** | 继承 Simulator，用共轭梯度法替代 SOR 迭代求解压力 |
 | **SubgridSimulator.h/cpp** | Batty 论文的 MAC 面流体体积分数加权压力投影，保留小于单个网格的通道流动 |
 | **FreeSurfaceSeparationSimulator.h/cpp** | Batty 论文第 4 节壁面自然分离条件，使用逐壁面 active-set 近似 KKT 互补条件 |
+| **VariationalCoupledSimulator.h/cpp** | 将子网格质量权重和逐壁面分离条件接入流固耦合 case |
 | **RigidBody.h** | 刚体定义（位置、速度、旋转、SDF 距离查询） |
 | **CaseCoupled.h/cpp** | 主程序入口、UI界面、渲染循环、流体-刚体耦合的主逻辑 |
 | **CaseSubgrid.h/cpp** | 子网格精度流动 case 的独立 UI、场景和渲染逻辑 |
@@ -77,4 +79,5 @@ void SimulateTimestep(float const dt) {
 
 运行 `xmake build lab4-tests` 后执行生成的 `lab4-tests`。测试覆盖标准
 固壁无散投影、壁面分离/接触互补条件、长时间无穿透，以及半格宽通道中
-子网格权重与二值体素权重的行为差异。
+子网格权重与二值体素权重的行为差异。debug 构建可传入 `--quick`
+跳过耗时的长轨迹对照。

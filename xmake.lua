@@ -161,6 +161,7 @@ target("lab4-tests")
     add_files("src/VCX/Labs/FinalProject/FluidSimulator.cpp")
     add_files("src/VCX/Labs/FinalProject/SubgridSimulator.cpp")
     add_files("src/VCX/Labs/FinalProject/FreeSurfaceSeparationSimulator.cpp")
+    add_files("src/VCX/Labs/FinalProject/VariationalCoupledSimulator.cpp")
     add_files("src/VCX/Labs/FinalProject/tests/*.cpp")
     if is_plat("windows") then
         add_cxflags("/EHsc")

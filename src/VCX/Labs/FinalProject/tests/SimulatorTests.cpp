@@ -3,15 +3,18 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "Labs/FinalProject/FreeSurfaceSeparationSimulator.h"
 #include "Labs/FinalProject/SubgridSimulator.h"
+#include "Labs/FinalProject/VariationalCoupledSimulator.h"
 
 namespace {
     using VCX::Labs::Final::FreeSurfaceSeparationSimulator;
     using VCX::Labs::Final::Simulator;
     using VCX::Labs::Final::SubgridSimulator;
+    using VCX::Labs::Final::VariationalCoupledSimulator;
 
     void require(bool condition, std::string_view message) {
         if (! condition)
@@ -210,15 +213,178 @@ namespace {
             weightedMaxX > binaryMaxX + 0.08f,
             "sub-grid and voxelized channel flow are not meaningfully different");
     }
+
+    void prepareSingleCoupledWallCell(
+        VariationalCoupledSimulator & simulation,
+        float                         wallVelocity) {
+        simulation.setupScene(8);
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        simulation.m_type[offset(simulation, fluidCell)]  = Simulator::FLUID_CELL;
+        simulation.m_vel[offset(simulation, fluidCell)].x = wallVelocity;
+    }
+
+    void testCoupledStandardWallProjection() {
+        VariationalCoupledSimulator simulation;
+        prepareSingleCoupledWallCell(simulation, 1.0f);
+        simulation.enableWallSeparation = false;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        require(
+            std::abs(simulation.m_vel[offset(simulation, fluidCell)].x) < 1e-5f,
+            "coupled standard wall must enforce zero normal velocity");
+        require(
+            std::abs(divergence(simulation, fluidCell)) < 1e-4f,
+            "coupled standard wall projection must remain divergence-free");
+    }
+
+    void testCoupledOutwardWallSeparation() {
+        VariationalCoupledSimulator simulation;
+        prepareSingleCoupledWallCell(simulation, 1.0f);
+        simulation.enableWallSeparation = true;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        require(
+            simulation.m_vel[offset(simulation, fluidCell)].x > 1e-4f,
+            "coupled solver must allow outward wall separation");
+    }
+
+    void prepareSingleBodyWallCell(
+        VariationalCoupledSimulator & simulation,
+        VCX::Labs::Final::RigidBody & body,
+        float                         bodyVelocity) {
+        simulation.setupScene(8);
+        body.Reset(
+            { 0.1f, -0.0625f, -0.0625f },
+            { bodyVelocity, 0.0f, 0.0f },
+            { 0.3f, 0.2f, 0.2f },
+            1.0f,
+            { 1.0f, 1.0f, 1.0f });
+        simulation.m_body = &body;
+
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+        simulation.m_type[offset(simulation, { 3, 3, 3 })] = Simulator::FLUID_CELL;
+    }
+
+    void testCoupledMovingBodyContactAndSeparation() {
+        VariationalCoupledSimulator contactSimulation;
+        VCX::Labs::Final::RigidBody contactBody;
+        prepareSingleBodyWallCell(contactSimulation, contactBody, -0.5f);
+        contactSimulation.enableWallSeparation = true;
+        contactSimulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        glm::ivec3 const bodyFace { 4, 3, 3 };
+        require(
+            std::abs(contactSimulation.m_vel[offset(contactSimulation, bodyFace)].x + 0.5f) < 1e-4f,
+            "body moving into fluid must keep the normal velocity in contact");
+        require(contactSimulation.pressureSolveSucceeded, "moving-body contact pressure solve failed");
+
+        VariationalCoupledSimulator separationSimulation;
+        VCX::Labs::Final::RigidBody separationBody;
+        prepareSingleBodyWallCell(separationSimulation, separationBody, 0.5f);
+        separationSimulation.enableWallSeparation = true;
+        separationSimulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        float const fluidVelocity =
+            separationSimulation.m_vel[offset(separationSimulation, bodyFace)].x;
+        require(
+            fluidVelocity - separationBody.velocity.x <= 1e-4f,
+            "body moving away from fluid produced an interpenetrating relative velocity");
+        require(
+            std::abs(fluidVelocity - separationBody.velocity.x) > 1e-3f,
+            "body moving away from fluid incorrectly kept a sticking contact");
+        require(separationSimulation.pressureSolveSucceeded, "moving-body separation pressure solve failed");
+    }
+
+    void testCoupledScenarioRemainsFinite() {
+        VariationalCoupledSimulator simulation;
+        simulation.setupScene(24);
+
+        VCX::Labs::Final::RigidBody body;
+        body.Reset(
+            { 0.0f, 0.3f, 0.0f },
+            { 0.0f, 0.0f, 0.0f },
+            { 0.3f, 0.3f, 0.3f },
+            0.3f,
+            { 1.0f, 1.0f, 1.0f });
+        simulation.m_body = &body;
+
+        float constexpr dt = 0.016f;
+        for (int frame = 0; frame < 80; ++frame) {
+            simulation.SimulateTimestep(dt);
+            if (! simulation.pressureSolveSucceeded) {
+                throw std::runtime_error(
+                    "coupled scenario pressure solve failed at frame "
+                    + std::to_string(frame));
+            }
+
+            glm::vec3 const force =
+                glm::vec3(0.0f, -9.81f, 0.0f) * body.mass
+                + simulation.m_feedbackForce;
+            body.velocity += force / body.mass * dt;
+            if (body.position.y < 0.1f) {
+                body.velocity *= 0.96f;
+                body.angularVelocity *= 0.95f;
+            }
+            body.position += body.velocity * dt;
+            body.angularVelocity +=
+                body.GetInertiaWorldInv() * simulation.m_feedbackTorque * dt;
+            if (glm::length(body.angularVelocity) > 0.001f) {
+                glm::vec3 const axis  = glm::normalize(body.angularVelocity);
+                float const     angle = glm::length(body.angularVelocity) * dt;
+                body.orientation =
+                    glm::normalize(glm::angleAxis(angle, axis) * body.orientation);
+            }
+
+            glm::vec3 const halfDimension = body.dim * 0.5f;
+            for (int direction = 0; direction < 3; ++direction) {
+                if (body.position[direction] - halfDimension[direction] < -0.5f) {
+                    body.position[direction] = -0.5f + halfDimension[direction];
+                    body.velocity[direction] *= -0.5f;
+                }
+                if (body.position[direction] + halfDimension[direction] > 0.5f) {
+                    body.position[direction] = 0.5f - halfDimension[direction];
+                    body.velocity[direction] *= -0.5f;
+                }
+            }
+        }
+
+        require(std::isfinite(simulation.pressureResidual), "coupled pressure residual is not finite");
+        require(isFinite(body.position), "coupled scenario produced a non-finite body position");
+        require(isFinite(body.velocity), "coupled scenario produced a non-finite body velocity");
+        require(isFinite(simulation.m_feedbackForce), "coupled scenario produced a non-finite feedback force");
+        require(
+            std::all_of(
+                simulation.m_particlePos.begin(),
+                simulation.m_particlePos.end(),
+                isFinite),
+            "coupled scenario produced a non-finite particle position");
+    }
 } // namespace
 
-int main() {
+int main(int argc, char ** argv) {
+    bool const quick =
+        argc > 1 && std::string_view(argv[1]) == "--quick";
+
     try {
         testStandardWallProjection();
         testOutwardWallSeparation();
         testInwardWallContact();
-        testSeparationScenarioRemainsFiniteAndNonpenetrating();
-        testSubgridChannelPreservesHalfCellFlow();
+        testCoupledStandardWallProjection();
+        testCoupledOutwardWallSeparation();
+        testCoupledMovingBodyContactAndSeparation();
+        if (! quick) {
+            testSeparationScenarioRemainsFiniteAndNonpenetrating();
+            testSubgridChannelPreservesHalfCellFlow();
+            testCoupledScenarioRemainsFinite();
+        }
     } catch (std::exception const & error) {
         std::cerr << "FAILED: " << error.what() << '\n';
         return 1;
