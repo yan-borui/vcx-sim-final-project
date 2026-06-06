@@ -198,12 +198,63 @@ namespace VCX::Labs::Final {
         if (matrixSize == 0)
             return;
 
+        std::vector<char> pinnedRows(matrixSize, 0);
+        std::vector<char> visitedRows(matrixSize, 0);
+        for (int seed = 0; seed < matrixSize; ++seed) {
+            if (visitedRows[seed])
+                continue;
+
+            bool             hasDirichletBoundary = false;
+            std::vector<int> component;
+            std::vector<int> pending { seed };
+            visitedRows[seed] = 1;
+            while (! pending.empty()) {
+                int const row = pending.back();
+                pending.pop_back();
+                component.push_back(row);
+
+                int const        idx = matrixToCell[row];
+                glm::ivec3 const cell {
+                    idx % m_iCellX,
+                    (idx / m_iCellX) % m_iCellY,
+                    idx / (m_iCellX * m_iCellY),
+                };
+                for (FaceNeighbor const & side : FaceNeighbors) {
+                    glm::ivec3 const face     = cell + side.FaceOffset;
+                    glm::ivec3 const neighbor = cell + side.CellOffset;
+                    int const        faceIdx  = index2GridOffset(face);
+                    if (faceWeight(side.Direction, faceIdx) <= 1e-6f
+                        || isSolidPressureCell(neighbor))
+                        continue;
+
+                    int const neighborColumn =
+                        cellToMatrix[index2GridOffset(neighbor)];
+                    if (neighborColumn >= 0) {
+                        if (! visitedRows[neighborColumn]) {
+                            visitedRows[neighborColumn] = 1;
+                            pending.push_back(neighborColumn);
+                        }
+                    } else if (m_type[index2GridOffset(neighbor)] == EMPTY_CELL) {
+                        hasDirichletBoundary = true;
+                    }
+                }
+            }
+
+            if (! hasDirichletBoundary)
+                pinnedRows[component.front()] = 1;
+        }
+
         Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
         std::vector<Eigen::Triplet<double>> triplets;
         triplets.reserve(matrixSize * 7);
         Eigen::VectorXd rhs = Eigen::VectorXd::Zero(matrixSize);
 
         for (int row = 0; row < matrixSize; ++row) {
+            if (pinnedRows[row]) {
+                triplets.emplace_back(row, row, 1.0);
+                continue;
+            }
+
             int const        idx = matrixToCell[row];
             glm::ivec3 const cell {
                 idx % m_iCellX,
@@ -230,7 +281,7 @@ namespace VCX::Labs::Final {
 
                 int const neighborIdx    = index2GridOffset(neighbor);
                 int const neighborColumn = cellToMatrix[neighborIdx];
-                if (neighborColumn >= 0)
+                if (neighborColumn >= 0 && ! pinnedRows[neighborColumn])
                     triplets.emplace_back(row, neighborColumn, -double(weight));
             }
 

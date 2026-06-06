@@ -220,30 +220,52 @@ namespace VCX::Labs::Final {
             triplets.reserve(matrixSize * 7);
             Eigen::VectorXd rhs = Eigen::VectorXd::Zero(matrixSize);
 
-            bool hasDirichletBoundary = false;
-            for (int row = 0; row < matrixSize && ! hasDirichletBoundary; ++row) {
-                glm::ivec3 const cell = decodeCell(rowToCell[row]);
-                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
-                    FaceNeighbor const & side     = FaceNeighbors[sideIndex];
-                    glm::ivec3 const     neighbor = cell + side.CellOffset;
-                    int const            wallFaceIndex =
-                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
-                    if (wallFaceIndex >= 0) {
-                        WallFace const & wallFace = wallFaces[wallFaceIndex];
-                        if (wallFace.Candidate && ! wallFace.Contact) {
-                            hasDirichletBoundary = true;
-                            break;
+            std::vector<char> pinnedRows(matrixSize, 0);
+            std::vector<char> visitedRows(matrixSize, 0);
+            for (int seed = 0; seed < matrixSize; ++seed) {
+                if (visitedRows[seed])
+                    continue;
+
+                bool             hasDirichletBoundary = false;
+                std::vector<int> component;
+                std::vector<int> pending { seed };
+                visitedRows[seed] = 1;
+                while (! pending.empty()) {
+                    int const row = pending.back();
+                    pending.pop_back();
+                    component.push_back(row);
+
+                    glm::ivec3 const cell = decodeCell(rowToCell[row]);
+                    for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
+                        FaceNeighbor const & side     = FaceNeighbors[sideIndex];
+                        glm::ivec3 const     neighbor = cell + side.CellOffset;
+                        int const            wallFaceIndex =
+                            wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
+                        if (wallFaceIndex >= 0) {
+                            WallFace const & wallFace = wallFaces[wallFaceIndex];
+                            if (wallFace.Candidate && ! wallFace.Contact)
+                                hasDirichletBoundary = true;
+                            continue;
                         }
-                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                        hasDirichletBoundary = true;
-                        break;
+
+                        int const neighborRow = cellToRow[gridOffset(neighbor)];
+                        if (neighborRow >= 0) {
+                            if (! visitedRows[neighborRow]) {
+                                visitedRows[neighborRow] = 1;
+                                pending.push_back(neighborRow);
+                            }
+                        } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                            hasDirichletBoundary = true;
+                        }
                     }
                 }
+
+                if (! hasDirichletBoundary)
+                    pinnedRows[component.front()] = 1;
             }
 
-            int const pinnedRow = hasDirichletBoundary ? -1 : 0;
             for (int row = 0; row < matrixSize; ++row) {
-                if (row == pinnedRow) {
+                if (pinnedRows[row]) {
                     triplets.emplace_back(row, row, 1.0);
                     continue;
                 }
@@ -276,7 +298,7 @@ namespace VCX::Labs::Final {
                     diagonal += 1.0;
                     if (m_type[gridOffset(neighbor)] == FLUID_CELL) {
                         int const neighborRow = cellToRow[gridOffset(neighbor)];
-                        if (neighborRow >= 0 && neighborRow != pinnedRow)
+                        if (neighborRow >= 0 && ! pinnedRows[neighborRow])
                             triplets.emplace_back(row, neighborRow, -1.0);
                     }
                 }

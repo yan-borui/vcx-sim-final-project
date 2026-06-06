@@ -97,6 +97,73 @@ namespace {
         require(simulation.separatingWallFaces == 0, "contacting wall face must not be classified as separating");
     }
 
+    void testDisconnectedClosedPressureComponent() {
+        FreeSurfaceSeparationSimulator simulation;
+        simulation.setupScene(8);
+        simulation.enableWallSeparation = false;
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+
+        glm::ivec3 const closedLeft { 4, 4, 4 };
+        glm::ivec3 const closedRight { 5, 4, 4 };
+        glm::ivec3 const openCell { 2, 2, 2 };
+        simulation.m_type[offset(simulation, closedLeft)]  = Simulator::FLUID_CELL;
+        simulation.m_type[offset(simulation, closedRight)] = Simulator::FLUID_CELL;
+        simulation.m_type[offset(simulation, openCell)]    = Simulator::FLUID_CELL;
+
+        glm::ivec3 const neighbors[] = {
+            { -1,  0,  0 },
+            {  1,  0,  0 },
+            {  0, -1,  0 },
+            {  0,  1,  0 },
+            {  0,  0, -1 },
+            {  0,  0,  1 },
+        };
+        for (glm::ivec3 const cell : { closedLeft, closedRight }) {
+            simulation.m_s[offset(simulation, cell)] = 1.0f;
+            for (glm::ivec3 const neighborOffset : neighbors) {
+                glm::ivec3 const neighbor = cell + neighborOffset;
+                if (neighbor != closedLeft && neighbor != closedRight)
+                    simulation.m_s[offset(simulation, neighbor)] = 0.0f;
+            }
+        }
+        simulation.m_vel[offset(simulation, closedRight)].x = 1.0f;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        require(std::isfinite(simulation.pressureResidual), "disconnected pressure component solve failed");
+        require(
+            std::abs(divergence(simulation, closedLeft)) < 1e-4f,
+            "left cell in closed pressure component is not divergence-free");
+        require(
+            std::abs(divergence(simulation, closedRight)) < 1e-4f,
+            "right cell in closed pressure component is not divergence-free");
+
+        VariationalCoupledSimulator coupled;
+        coupled.setupScene(8);
+        coupled.enableWallSeparation = false;
+        std::fill(coupled.m_type.begin(), coupled.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(coupled.m_vel.begin(), coupled.m_vel.end(), glm::vec3(0.0f));
+        coupled.m_type[offset(coupled, closedLeft)]  = Simulator::FLUID_CELL;
+        coupled.m_type[offset(coupled, closedRight)] = Simulator::FLUID_CELL;
+        coupled.m_type[offset(coupled, openCell)]    = Simulator::FLUID_CELL;
+        for (glm::ivec3 const cell : { closedLeft, closedRight }) {
+            coupled.m_s[offset(coupled, cell)] = 1.0f;
+            for (glm::ivec3 const neighborOffset : neighbors) {
+                glm::ivec3 const neighbor = cell + neighborOffset;
+                if (neighbor != closedLeft && neighbor != closedRight)
+                    coupled.m_s[offset(coupled, neighbor)] = 0.0f;
+            }
+        }
+        coupled.m_vel[offset(coupled, closedRight)].x          = 1.0f;
+        coupled.m_particleRestDensity                          = 1.0f;
+        coupled.m_particleDensity[offset(coupled, closedLeft)] = 2.0f;
+        coupled.solveIncompressibility(200, 0.01f, 1.0f, true);
+        require(
+            coupled.pressureSolveSucceeded && std::isfinite(coupled.pressureResidual),
+            "closed component with drift compensation has an unresolved pressure null-space");
+    }
+
     void testSeparationScenarioRemainsFiniteAndNonpenetrating() {
         FreeSurfaceSeparationSimulator simulation;
         simulation.setupScene(16);
@@ -377,6 +444,7 @@ int main(int argc, char ** argv) {
         testStandardWallProjection();
         testOutwardWallSeparation();
         testInwardWallContact();
+        testDisconnectedClosedPressureComponent();
         testCoupledStandardWallProjection();
         testCoupledOutwardWallSeparation();
         testCoupledMovingBodyContactAndSeparation();
