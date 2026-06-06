@@ -12,6 +12,7 @@
 #include "Labs/Scene/SceneObject.h"
 #include "Labs/FinalProject/APICSimulator.h"
 #include "Labs/FinalProject/CGSimulator.h"
+#include "Labs/FinalProject/VariationalCoupledSimulator.h"
 #include "RigidBody.h"
 
 
@@ -56,7 +57,7 @@ namespace VCX::Labs::FluidSimulation {
         float                               _r;
         int                                 numofSpheres;
         Final::Simulator*                   _sim;
-        Final::Simulator                    _simulation;
+        Final::VariationalCoupledSimulator  _simulation;
         Final::APICSimulator                _apicSimulation;
         Final::CGSimulator                  _cgsimulation;
         Final::RigidBody                    _body;
