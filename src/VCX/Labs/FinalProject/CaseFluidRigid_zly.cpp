@@ -1,9 +1,9 @@
-#include "Labs/0-GettingStarted/CaseFluidRigid_zly.h"
+#include "Labs/FinalProject/CaseFluidRigid_zly.h"
 #include "Labs/Common/ImGuiHelper.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
-namespace VCX::Labs::GettingStarted {
+namespace VCX::Labs::Final {
 
     CaseFluidRigid::CaseFluidRigid():
         _program(Engine::GL::UniqueProgram({ Engine::GL::SharedShader("assets/shaders/flat.vert"),
@@ -61,7 +61,7 @@ namespace VCX::Labs::GettingStarted {
             "Orange=floats, Green=neutral, Red=sinks, Yellow=very light.");
     }
 
-    // ©¤©¤ build particle octahedra (small spheres) ©¤©¤
+    // Â©Â¤Â©Â¤ build particle octahedra (small spheres) Â©Â¤Â©Â¤
     void CaseFluidRigid::BuildFluidSurface() {
         float  r = _sim.dx * 0.18f; // particle visual radius
         size_t n = _sim.particles.size();
@@ -131,7 +131,7 @@ namespace VCX::Labs::GettingStarted {
         gl_using(_frame);
         glEnable(GL_DEPTH_TEST);
 
-        // ©¤©¤ fluid particles as small octahedra ©¤©¤
+        // Â©Â¤Â©Â¤ fluid particles as small octahedra Â©Â¤Â©Â¤
         _verts.clear();
         _triIdx.clear();
         BuildFluidSurface();
@@ -142,7 +142,7 @@ namespace VCX::Labs::GettingStarted {
             _triItem.Draw({ _program.Use() });
         }
 
-        // ©¤©¤ rigid bodies ©¤©¤
+        // Â©Â¤Â©Â¤ rigid bodies Â©Â¤Â©Â¤
         for (auto & b : _sim.bodies) {
             _verts.clear();
             _triIdx.clear();
@@ -155,7 +155,7 @@ namespace VCX::Labs::GettingStarted {
             }
         }
 
-        // ©¤©¤ wireframe ©¤©¤
+        // Â©Â¤Â©Â¤ wireframe Â©Â¤Â©Â¤
         _lineVerts.clear();
         _lineIdx.clear();
         AddWireBox({ 0, 0, 0 }, { _sim.domainW, _sim.domainH, _sim.domainD });
