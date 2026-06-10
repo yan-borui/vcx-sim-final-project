@@ -6,7 +6,7 @@
 #include <random>
 #include <vector>
 
-namespace VCX::Labs::GettingStarted {
+namespace VCX::Labs::Final {
 
     struct RigidBody3D {
         glm::vec3 position { 0 }, velocity { 0 }, dragForce { 0 }, color { 1 };
