@@ -2,12 +2,12 @@
 #include "Engine/GL/Frame.hpp"
 #include "Engine/GL/Program.h"
 #include "Engine/GL/RenderItem.h"
-#include "Labs/0-GettingStarted/FluidSimulator_zly.h"
+#include "Labs/FinalProject/FluidSimulator_zly.h"
 #include "Labs/Common/ICase.h"
 #include "Labs/Common/ImageRGB.h"
 #include "Labs/Common/OrbitCameraManager.h"
 
-namespace VCX::Labs::GettingStarted {
+namespace VCX::Labs::Final {
     class CaseFluidRigid : public Common::ICase {
     public:
         CaseFluidRigid();
