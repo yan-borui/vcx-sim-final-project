@@ -232,6 +232,7 @@ namespace VCX::Labs::Final {
         }
 
         Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
+        Eigen::VectorXd              appliedPressure      = Eigen::VectorXd::Zero(int(rowToCell.size()));
         auto                         updateMinimumContactPressure = [&]() {
             bool  hasContact = false;
             float minimum    = std::numeric_limits<float>::infinity();
@@ -239,7 +240,7 @@ namespace VCX::Labs::Final {
                 if (! wallFace.Candidate || ! wallFace.Contact)
                     continue;
                 hasContact = true;
-                minimum    = std::min(minimum, float(pressure[wallFace.Row]));
+                minimum    = std::min(minimum, float(appliedPressure[wallFace.Row]));
             }
             minimumContactPressure = hasContact ? minimum : 0.0f;
         };
@@ -364,6 +365,13 @@ namespace VCX::Labs::Final {
                 pressureResidual = std::numeric_limits<float>::infinity();
             }
 
+            appliedPressure = pressure;
+            for (WallFace const & wallFace : wallFaces) {
+                if (wallFace.Candidate && wallFace.Contact)
+                    appliedPressure[wallFace.Row] =
+                        std::max(appliedPressure[wallFace.Row], 0.0);
+            }
+
             m_vel = intermediateVelocity;
             for (WallFace const & wallFace : wallFaces) {
                 if (! wallFace.Candidate || wallFace.Contact)
@@ -373,7 +381,7 @@ namespace VCX::Labs::Final {
 
             for (int row = 0; row < matrixSize; ++row) {
                 glm::ivec3 const cell         = decodeCell(rowToCell[row]);
-                float const      cellPressure = float(pressure[row]);
+                float const      cellPressure = float(appliedPressure[row]);
                 for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
                     FaceNeighbor const & side    = FaceNeighbors[sideIndex];
                     glm::ivec3 const     face    = cell + side.FaceOffset;
@@ -463,7 +471,7 @@ namespace VCX::Labs::Final {
 
         for (int row = 0; row < int(rowToCell.size()); ++row) {
             int const idx = rowToCell[row];
-            m_p[idx]      = float(pressure[row]);
+            m_p[idx]      = float(appliedPressure[row]);
             separatingWallCells += separatingCell[row] ? 1 : 0;
         }
     }

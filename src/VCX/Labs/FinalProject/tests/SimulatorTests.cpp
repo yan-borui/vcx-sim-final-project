@@ -94,6 +94,9 @@ namespace {
         float const      normalVelocity = simulation.m_vel[offset(simulation, fluidCell)].x;
         require(normalVelocity >= -1e-5f, "wall separation must prevent penetration");
         require(std::abs(normalVelocity) < 1e-5f, "inward wall velocity must remain in contact");
+        require(
+            simulation.minimumContactPressure >= -1e-5f,
+            "contacting wall face must not keep negative pressure");
         require(simulation.separatingWallFaces == 0, "contacting wall face must not separate");
     }
 
@@ -116,7 +119,7 @@ namespace {
 
     void testWallSeparationActiveSetConverges() {
         FreeSurfaceSeparationSimulator simulation;
-        simulation.setupScene(16);
+        simulation.setupScene(24);
         simulation.enableWallSeparation = true;
 
         for (int frame = 0; frame < 20; ++frame) {
@@ -124,6 +127,9 @@ namespace {
             require(
                 simulation.wallSeparationActiveSetIterations < 128,
                 "wall separation active set hit the iteration cap");
+            require(
+                simulation.minimumContactPressure >= -1e-4f,
+                "wall separation kept negative contact pressure");
             require(
                 std::all_of(
                     simulation.m_particlePos.begin(),
