@@ -42,6 +42,87 @@ namespace {
             && std::isfinite(value.z);
     }
 
+    struct CoupledScenarioMetrics {
+        float MaxBodySpeed       = 0.0f;
+        float MaxAngularSpeed    = 0.0f;
+        float MaxParticleSpeed   = 0.0f;
+        float MaxFeedbackImpulse = 0.0f;
+    };
+
+    CoupledScenarioMetrics runDefaultCoupledScenario(int frameCount) {
+        VariationalCoupledSimulator simulation;
+        simulation.setupScene(16);
+
+        RigidBody body;
+        body.Reset(
+            { 0.0f, 0.3f, 0.0f },
+            { 0.0f, 0.0f, 0.0f },
+            { 0.3f, 0.3f, 0.3f },
+            0.3f,
+            { 0.8f, 0.2f, 0.2f });
+        simulation.m_body = &body;
+
+        CoupledScenarioMetrics metrics;
+        float constexpr       dt = 0.016f;
+        for (int frame = 0; frame < frameCount; ++frame) {
+            simulation.SimulateTimestep(dt);
+            require(simulation.pressureSolveSucceeded, "default coupled pressure solve failed");
+
+            glm::vec3 const totalForce =
+                glm::vec3(0.0f, -9.81f, 0.0f) * body.mass
+                + simulation.m_feedbackForce;
+            body.velocity += totalForce / std::max(body.mass, 1e-6f) * dt;
+
+            if (body.position.y < 0.1f) {
+                body.velocity *= 0.96f;
+                body.angularVelocity *= 0.95f;
+            }
+
+            body.position += body.velocity * dt;
+            body.angularVelocity +=
+                body.GetInertiaWorldInv() * simulation.m_feedbackTorque * dt;
+            if (glm::length(body.angularVelocity) > 0.001f) {
+                glm::vec3 const axis  = glm::normalize(body.angularVelocity);
+                float const     angle = glm::length(body.angularVelocity) * dt;
+                body.orientation =
+                    glm::normalize(glm::angleAxis(angle, axis) * body.orientation);
+            }
+
+            float const boundRadius = body.BoundingRadius();
+            for (int direction = 0; direction < 3; ++direction) {
+                if (body.position[direction] - boundRadius < -0.5f) {
+                    body.position[direction] = -0.5f + boundRadius;
+                    body.velocity[direction] *= -0.5f;
+                }
+                if (body.position[direction] + boundRadius > 0.5f) {
+                    body.position[direction] = 0.5f - boundRadius;
+                    body.velocity[direction] *= -0.5f;
+                }
+            }
+
+            metrics.MaxBodySpeed =
+                std::max(metrics.MaxBodySpeed, glm::length(body.velocity));
+            metrics.MaxAngularSpeed =
+                std::max(metrics.MaxAngularSpeed, glm::length(body.angularVelocity));
+            metrics.MaxFeedbackImpulse = std::max(
+                metrics.MaxFeedbackImpulse,
+                glm::length(simulation.m_feedbackForce) * dt);
+            for (glm::vec3 const velocity : simulation.m_particleVel)
+                metrics.MaxParticleSpeed =
+                    std::max(metrics.MaxParticleSpeed, glm::length(velocity));
+
+            require(isFinite(body.position), "default coupled body position is not finite");
+            require(isFinite(body.velocity), "default coupled body velocity is not finite");
+            require(
+                std::all_of(
+                    simulation.m_particlePos.begin(),
+                    simulation.m_particlePos.end(),
+                    isFinite),
+                "default coupled particle position is not finite");
+        }
+        return metrics;
+    }
+
     void prepareSingleWallCell(
         FreeSurfaceSeparationSimulator & simulation,
         float                            wallVelocity) {
@@ -274,6 +355,22 @@ namespace {
             std::abs(fluidVelocity - separationBody.velocity.x) > 1e-3f,
             "body moving away from fluid incorrectly kept a sticking contact");
     }
+
+    void testDefaultCoupledScenarioRemainsStable() {
+        CoupledScenarioMetrics const metrics = runDefaultCoupledScenario(240);
+        require(
+            metrics.MaxBodySpeed < 8.0f,
+            "default coupled body gained excessive linear speed");
+        require(
+            metrics.MaxAngularSpeed < 120.0f,
+            "default coupled body gained excessive angular speed");
+        require(
+            metrics.MaxParticleSpeed < 30.0f,
+            "default coupled particles gained excessive speed");
+        require(
+            metrics.MaxFeedbackImpulse < 0.5f,
+            "default coupled pressure feedback produced an excessive impulse");
+    }
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -289,8 +386,10 @@ int main(int argc, char ** argv) {
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
-        if (! quick)
+        if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();
+            testDefaultCoupledScenarioRemainsStable();
+        }
     } catch (std::exception const & error) {
         std::cerr << "FAILED: " << error.what() << '\n';
         return 1;

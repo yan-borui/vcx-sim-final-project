@@ -541,8 +541,12 @@ namespace VCX::Labs::Final {
             glm::vec3 const applicationPoint = faceCenter(face, sample.Direction);
             glm::vec3       forceDirection(0.0f);
             forceDirection[sample.Direction] = sample.DivergenceSign;
-            float const     area  = sample.BoundaryWeight * m_h * m_h;
-            glm::vec3 const force = forceDirection * pressure * area * invDt;
+            // The solved pressure is a velocity correction. Converting it
+            // back to a rigid-body force requires one fluid cell mass.
+            float const impulseScale =
+                sample.BoundaryWeight * m_h * m_h * m_h;
+            glm::vec3 const force =
+                forceDirection * pressure * impulseScale * invDt;
             m_feedbackForce += force;
             m_feedbackTorque += glm::cross(applicationPoint - m_body->position, force);
         }
