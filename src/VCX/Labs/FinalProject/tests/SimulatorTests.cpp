@@ -97,6 +97,23 @@ namespace {
         require(simulation.separatingWallFaces == 0, "contacting wall face must not separate");
     }
 
+    void testNegativeWallPressureSeparates() {
+        FreeSurfaceSeparationSimulator simulation;
+        prepareSingleWallCell(simulation, 0.0f);
+        simulation.enableWallSeparation = true;
+
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        simulation.m_vel[offset(simulation, fluidCell + glm::ivec3(1, 0, 0))].x = 1.0f;
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        require(
+            simulation.m_vel[offset(simulation, fluidCell)].x > 1e-4f,
+            "negative wall pressure must release suction instead of sticking");
+        require(
+            simulation.separatingWallFaces >= 1,
+            "negative wall pressure must classify at least one wall face as separating");
+    }
+
     void testWallSeparationActiveSetConverges() {
         FreeSurfaceSeparationSimulator simulation;
         simulation.setupScene(16);
@@ -196,6 +213,20 @@ namespace {
             "coupled solver must prevent wall penetration");
     }
 
+    void testCoupledNegativeWallPressureSeparates() {
+        VariationalCoupledSimulator simulation;
+        prepareSingleCoupledWallCell(simulation, 0.0f);
+        simulation.enableWallSeparation = true;
+
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        simulation.m_vel[offset(simulation, fluidCell + glm::ivec3(1, 0, 0))].x = 1.0f;
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        require(
+            simulation.m_vel[offset(simulation, fluidCell)].x > 1e-4f,
+            "coupled solver must release negative-pressure wall suction");
+    }
+
     void testCoupledMovingBodyContactAndSeparation() {
         glm::ivec3 const fluidCell { 3, 3, 3 };
         glm::ivec3 const bodyFace { 4, 3, 3 };
@@ -247,8 +278,10 @@ int main(int argc, char ** argv) {
         testStandardWallProjection();
         testOutwardWallSeparation();
         testInwardWallContact();
+        testNegativeWallPressureSeparates();
         testWallSeparationActiveSetConverges();
         testCoupledWallSeparation();
+        testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
         if (! quick)
             testSubgridChannelPreservesHalfCellFlow();

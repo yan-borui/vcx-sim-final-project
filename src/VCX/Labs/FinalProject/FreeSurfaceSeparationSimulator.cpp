@@ -185,6 +185,7 @@ namespace VCX::Labs::Final {
             float WallVelocity;
             bool  Candidate;
             bool  Contact;
+            bool  ReleaseBlocked;
         };
 
         std::vector<WallFace> wallFaces;
@@ -212,6 +213,7 @@ namespace VCX::Labs::Final {
                     .WallVelocity   = 0.0f,
                     .Candidate      = enableWallSeparation && candidateCell,
                     .Contact        = true,
+                    .ReleaseBlocked = false,
                 });
             }
         }
@@ -412,12 +414,7 @@ namespace VCX::Labs::Final {
                 if (! wallFace.Candidate || ! wallFace.Contact)
                     continue;
 
-                float const unconstrainedSeparationSpeed =
-                    -wallFace.DivergenceSign
-                    * (intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
-                       - wallFace.WallVelocity);
-                if (pressure[wallFace.Row] < -1e-5
-                    && unconstrainedSeparationSpeed > 1e-5f) {
+                if (! wallFace.ReleaseBlocked && pressure[wallFace.Row] < -1e-5) {
                     wallFace.Contact = false;
                     removedNegativePressureContact = true;
                     changedActiveSet = true;
@@ -436,6 +433,7 @@ namespace VCX::Labs::Final {
                        - wallFace.WallVelocity);
                 if (separationSpeed < -1e-5f) {
                     wallFace.Contact = true;
+                    wallFace.ReleaseBlocked = true;
                     changedActiveSet = true;
                 }
             }
