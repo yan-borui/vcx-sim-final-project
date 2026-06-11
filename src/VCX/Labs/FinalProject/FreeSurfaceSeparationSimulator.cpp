@@ -1,5 +1,6 @@
 #include "Labs/FinalProject/FreeSurfaceSeparationSimulator.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -213,6 +214,17 @@ namespace VCX::Labs::Final {
 
         std::vector<glm::vec3> const intermediateVelocity = m_vel;
         Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
+        auto                         updateMinimumContactPressure = [&]() {
+            bool  hasContact = false;
+            float minimum    = std::numeric_limits<float>::infinity();
+            for (WallFace const & wallFace : wallFaces) {
+                if (! wallFace.Candidate || ! wallFace.Contact)
+                    continue;
+                hasContact = true;
+                minimum    = std::min(minimum, float(pressure[wallFace.Row]));
+            }
+            minimumContactPressure = hasContact ? minimum : 0.0f;
+        };
         auto                         solveWithContacts    = [&]() {
             int const                           matrixSize = int(rowToCell.size());
             Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
@@ -358,44 +370,42 @@ namespace VCX::Labs::Final {
 
         bool      changedActiveSet       = false;
         int const maxActiveSetIterations = enableWallSeparation
-            ? std::min<int>(64, int(wallFaces.size()) + 1)
+            ? std::min<int>(256, 2 * int(wallFaces.size()) + 8)
             : 1;
         for (int iter = 0; iter < maxActiveSetIterations; ++iter) {
             solveWithContacts();
             wallSeparationActiveSetIterations = iter + 1;
-
-            if (iter == 0 && pressure.size() > 0)
-                minimumContactPressure = float(pressure.minCoeff());
+            updateMinimumContactPressure();
 
             changedActiveSet = false;
             if (! enableWallSeparation)
                 break;
 
+            bool removedNegativePressureContact = false;
             for (WallFace & wallFace : wallFaces) {
-                if (! wallFace.Candidate)
+                if (! wallFace.Candidate || ! wallFace.Contact)
+                    continue;
+
+                if (pressure[wallFace.Row] < -1e-5) {
+                    wallFace.Contact = false;
+                    removedNegativePressureContact = true;
+                    changedActiveSet = true;
+                }
+            }
+            if (removedNegativePressureContact)
+                continue;
+
+            for (WallFace & wallFace : wallFaces) {
+                if (! wallFace.Candidate || wallFace.Contact)
                     continue;
 
                 float const separationSpeed =
                     -wallFace.DivergenceSign
                     * (m_vel[wallFace.FaceIndex][wallFace.Direction]
                        - wallFace.WallVelocity);
-                if (! wallFace.Contact && separationSpeed < -1e-5f) {
+                if (separationSpeed < -1e-5f) {
                     wallFace.Contact = true;
                     changedActiveSet = true;
-                    continue;
-                }
-
-                if (wallFace.Contact) {
-                    float const freeVelocity =
-                        intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
-                        + wallFace.DivergenceSign * float(pressure[wallFace.Row]);
-                    float const freeSeparationSpeed =
-                        -wallFace.DivergenceSign
-                        * (freeVelocity - wallFace.WallVelocity);
-                    if (freeSeparationSpeed > 1e-5f) {
-                        wallFace.Contact = false;
-                        changedActiveSet = true;
-                    }
                 }
             }
             if (! changedActiveSet)
@@ -405,6 +415,7 @@ namespace VCX::Labs::Final {
         if (changedActiveSet) {
             solveWithContacts();
             ++wallSeparationActiveSetIterations;
+            updateMinimumContactPressure();
         }
 
         std::vector<char> separatingCell(rowToCell.size(), 0);

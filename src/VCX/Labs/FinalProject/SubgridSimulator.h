@@ -24,7 +24,10 @@ namespace VCX::Labs::Final {
         float     estimateFaceFluidFraction(glm::ivec3 const & face, int dir);
         float     faceWeight(int dir, int idx) const;
         bool      isTankFaceOpen(glm::ivec3 const & face, int dir);
-        bool      isSolidPressureCell(glm::ivec3 const & cell);
+        bool      isTankSolidCell(glm::ivec3 const & cell);
+        bool      isBodyInteriorPressureCell(glm::ivec3 const & cell);
+        bool      hasFluidSupportAcrossOpenFace(glm::ivec3 const & cell);
+        bool      isPressureUnknownCell(glm::ivec3 const & cell);
         bool      isValidCell(glm::ivec3 const & cell) const;
         glm::vec3 pressureCellCenter(glm::ivec3 const & cell) const;
     };

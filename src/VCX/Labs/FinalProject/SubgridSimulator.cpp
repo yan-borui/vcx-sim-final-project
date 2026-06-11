@@ -97,10 +97,50 @@ namespace VCX::Labs::Final {
             && m_s[index2GridOffset(right)] > 0.0f;
     }
 
-    bool SubgridSimulator::isSolidPressureCell(glm::ivec3 const & cell) {
+    bool SubgridSimulator::isTankSolidCell(glm::ivec3 const & cell) {
         if (! isValidCell(cell) || m_s[index2GridOffset(cell)] <= 0.0f)
             return true;
-        return m_body && m_body->GetSDF(pressureCellCenter(cell)) < -1e-5f;
+        return false;
+    }
+
+    bool SubgridSimulator::isBodyInteriorPressureCell(glm::ivec3 const & cell) {
+        return ! isTankSolidCell(cell)
+            && m_body
+            && m_body->GetSDF(pressureCellCenter(cell)) < -1e-5f;
+    }
+
+    bool SubgridSimulator::hasFluidSupportAcrossOpenFace(glm::ivec3 const & cell) {
+        if (! isBodyInteriorPressureCell(cell))
+            return false;
+
+        for (FaceNeighbor const & side : FaceNeighbors) {
+            glm::ivec3 const face = cell + side.FaceOffset;
+            if (! isValidCell(face))
+                continue;
+
+            int const faceIdx = index2GridOffset(face);
+            if (_faceFluidFraction[side.Direction][faceIdx] <= 1e-6f)
+                continue;
+
+            glm::ivec3 const neighbor = cell + side.CellOffset;
+            if (isTankSolidCell(neighbor))
+                continue;
+
+            int const neighborIdx = index2GridOffset(neighbor);
+            if (m_type[neighborIdx] == FLUID_CELL)
+                return true;
+        }
+
+        return false;
+    }
+
+    bool SubgridSimulator::isPressureUnknownCell(glm::ivec3 const & cell) {
+        if (isTankSolidCell(cell))
+            return false;
+
+        int const idx = index2GridOffset(cell);
+        return m_type[idx] == FLUID_CELL
+            || hasFluidSupportAcrossOpenFace(cell);
     }
 
     float SubgridSimulator::estimateFaceFluidFraction(glm::ivec3 const & face, int dir) {
@@ -173,6 +213,8 @@ namespace VCX::Labs::Final {
         (void) overRelaxation;
         (void) compensateDrift;
 
+        updateFaceFluidFractions();
+
         std::vector<int> cellToMatrix(m_iNumCells, -1);
         std::vector<int> matrixToCell;
         matrixToCell.reserve(m_iNumCells / 3);
@@ -183,7 +225,7 @@ namespace VCX::Labs::Final {
                 (idx / m_iCellX) % m_iCellY,
                 idx / (m_iCellX * m_iCellY),
             };
-            if (m_type[idx] == FLUID_CELL && ! isSolidPressureCell(cell)) {
+            if (isPressureUnknownCell(cell)) {
                 cellToMatrix[idx] = int(matrixToCell.size());
                 matrixToCell.push_back(idx);
             }
@@ -224,7 +266,7 @@ namespace VCX::Labs::Final {
                     glm::ivec3 const neighbor = cell + side.CellOffset;
                     int const        faceIdx  = index2GridOffset(face);
                     if (faceWeight(side.Direction, faceIdx) <= 1e-6f
-                        || isSolidPressureCell(neighbor))
+                        || isTankSolidCell(neighbor))
                         continue;
 
                     int const neighborColumn =
@@ -270,7 +312,7 @@ namespace VCX::Labs::Final {
                 float const      weight   = faceWeight(side.Direction, faceIdx);
                 glm::ivec3 const neighbor = cell + side.CellOffset;
 
-                if (weight <= 1e-6f || isSolidPressureCell(neighbor)) {
+                if (weight <= 1e-6f || isTankSolidCell(neighbor)) {
                     m_vel[faceIdx][side.Direction] = 0.0f;
                     continue;
                 }
@@ -331,7 +373,7 @@ namespace VCX::Labs::Final {
                 glm::ivec3 const face     = cell + side.FaceOffset;
                 int const        faceIdx  = index2GridOffset(face);
                 glm::ivec3 const neighbor = cell + side.CellOffset;
-                if (faceWeight(side.Direction, faceIdx) <= 1e-6f || isSolidPressureCell(neighbor))
+                if (faceWeight(side.Direction, faceIdx) <= 1e-6f || isTankSolidCell(neighbor))
                     continue;
                 m_vel[faceIdx][side.Direction] += side.DivergenceSign * pressureValue;
             }

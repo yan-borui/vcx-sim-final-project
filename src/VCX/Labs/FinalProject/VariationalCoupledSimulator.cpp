@@ -421,7 +421,7 @@ namespace VCX::Labs::Final {
 
         bool      changedActiveSet       = false;
         int const maxActiveSetIterations = enableWallSeparation
-            ? std::min<int>(64, int(wallFaces.size()) + 1)
+            ? std::min<int>(256, 2 * int(wallFaces.size()) + 8)
             : 1;
         for (int iter = 0; iter < maxActiveSetIterations; ++iter) {
             solveWithContacts();
@@ -429,31 +429,31 @@ namespace VCX::Labs::Final {
             if (! enableWallSeparation)
                 break;
 
+            bool removedNegativePressureContact = false;
             for (WallFace & wallFace : wallFaces) {
-                if (! wallFace.Candidate)
+                if (! wallFace.Candidate || ! wallFace.Contact)
+                    continue;
+
+                if (pressure[wallFace.Row] < -1e-5) {
+                    wallFace.Contact = false;
+                    removedNegativePressureContact = true;
+                    changedActiveSet = true;
+                }
+            }
+            if (removedNegativePressureContact)
+                continue;
+
+            for (WallFace & wallFace : wallFaces) {
+                if (! wallFace.Candidate || wallFace.Contact)
                     continue;
 
                 float const separationSpeed =
                     -wallFace.DivergenceSign
                     * (m_vel[wallFace.FaceIndex][wallFace.Direction]
                        - wallFace.WallVelocity);
-                if (! wallFace.Contact && separationSpeed < -1e-5f) {
+                if (separationSpeed < -1e-5f) {
                     wallFace.Contact = true;
                     changedActiveSet = true;
-                    continue;
-                }
-
-                if (wallFace.Contact) {
-                    float const freeVelocity =
-                        intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
-                        + wallFace.DivergenceSign * float(pressure[wallFace.Row]);
-                    float const freeSeparationSpeed =
-                        -wallFace.DivergenceSign
-                        * (freeVelocity - wallFace.WallVelocity);
-                    if (freeSeparationSpeed > 1e-5f) {
-                        wallFace.Contact = false;
-                        changedActiveSet = true;
-                    }
                 }
             }
             if (! changedActiveSet)
