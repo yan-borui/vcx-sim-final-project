@@ -135,10 +135,10 @@ namespace VCX::Labs::FluidSimulation {
             _stopped = ! _stopped;
 
         ImGui::Spacing();
-        ImGui::TextWrapped("Volume-weighted MAC pressure projection from Batty et al.");
         if (ImGui::Checkbox("Sub-grid weights", &_simulation.useSubgridWeights))
             ResetSystem();
 
+        ImGui::Separator();
         ImGui::Text("Cut faces: %d", _simulation.partiallyOpenFaceCount);
         ImGui::Text("Min fraction: %.3f", _simulation.minimumOpenFaceFraction);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);

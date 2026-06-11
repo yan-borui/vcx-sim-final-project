@@ -78,20 +78,17 @@ namespace VCX::Labs::FluidSimulation {
             _stopped = ! _stopped;
 
         ImGui::Spacing();
-        ImGui::TextWrapped(
-            "Batty et al. Section 4: a water blob hits the left wall. "
-            "A face-based active set switches between no-penetration contact "
-            "and a p = 0 separating surface.");
         if (ImGui::Checkbox("Wall Separation", &_simulation.enableWallSeparation))
             ResetSystem();
 
+        ImGui::Separator();
         ImGui::Text("Candidate cells: %d", _simulation.wallSeparationCandidates);
         ImGui::Text("Separating wall cells: %d", _simulation.separatingWallCells);
         ImGui::Text("Separating wall faces: %d", _simulation.separatingWallFaces);
-        ImGui::Text("Orange wall-contact particles: %d", _simulation.wallContactParticles);
+        ImGui::Text("Wall-contact particles: %d", _simulation.wallContactParticles);
         ImGui::Text("Average left-wall distance: %.3f", _simulation.averageLeftWallDistance);
         ImGui::Text("Active-set iterations: %d", _simulation.wallSeparationActiveSetIterations);
-        ImGui::Text("Min contact-solve p: %.5f", _simulation.minimumContactPressure);
+        ImGui::Text("Min contact pressure: %.5f", _simulation.minimumContactPressure);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
         ImGui::Checkbox("Highlight Wall Contact", &_simulation.highlightWallContact);
 
