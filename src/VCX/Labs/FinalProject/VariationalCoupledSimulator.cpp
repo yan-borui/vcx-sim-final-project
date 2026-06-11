@@ -208,6 +208,7 @@ namespace VCX::Labs::Final {
             float DivergenceSign;
             float BoundaryWeight;
             float WallVelocity;
+            bool  BodyBoundary;
             bool  Candidate;
             bool  Contact;
             bool  ReleaseBlocked;
@@ -231,6 +232,11 @@ namespace VCX::Labs::Final {
                     1.0f - faceWeight(side.Direction, faceIdx);
                 if (boundaryWeight <= 1e-6f)
                     continue;
+                bool const bodyBoundary =
+                    m_body
+                    && isValidCell(neighbor)
+                    && m_s[gridOffset(neighbor)] > 0.0f
+                    && m_body->GetSDF(pressureCellCenter(neighbor)) < -1e-5f;
 
                 wallFaceForSide[row * FaceNeighbors.size() + sideIndex] =
                     int(wallFaces.size());
@@ -241,6 +247,7 @@ namespace VCX::Labs::Final {
                     .DivergenceSign = side.DivergenceSign,
                     .BoundaryWeight = boundaryWeight,
                     .WallVelocity   = solidVelocity(face, side.Direction, neighbor),
+                    .BodyBoundary   = bodyBoundary,
                     .Candidate      = candidateCell,
                     .Contact        = true,
                     .ReleaseBlocked = false,
@@ -505,6 +512,8 @@ namespace VCX::Labs::Final {
         std::vector<BoundaryPressureSample> boundarySamples;
         boundarySamples.reserve(wallFaces.size());
         for (WallFace const & wallFace : wallFaces) {
+            if (! wallFace.BodyBoundary)
+                continue;
             boundarySamples.push_back(BoundaryPressureSample {
                 .PressureCell    = rowToCell[wallFace.Row],
                 .FaceIndex       = wallFace.FaceIndex,

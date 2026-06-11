@@ -356,6 +356,36 @@ namespace {
             "body moving away from fluid incorrectly kept a sticking contact");
     }
 
+    void testTankPressureDoesNotPushRigidBody() {
+        VariationalCoupledSimulator simulation;
+        simulation.setupScene(8);
+        simulation.enableWallSeparation = false;
+
+        RigidBody body;
+        body.Reset(
+            { 0.3f, 0.3f, 0.3f },
+            { 0.0f, 0.0f, 0.0f },
+            { 0.1f, 0.1f, 0.1f },
+            0.3f,
+            { 0.8f, 0.2f, 0.2f });
+        simulation.m_body = &body;
+
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+        glm::ivec3 const fluidCell { 1, 3, 3 };
+        simulation.m_type[offset(simulation, fluidCell)] = Simulator::FLUID_CELL;
+        simulation.m_vel[offset(simulation, fluidCell + glm::ivec3(1, 0, 0))].x = -1.0f;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        require(
+            glm::length(simulation.m_feedbackForce) < 1e-6f,
+            "tank wall pressure incorrectly pushed a remote rigid body");
+        require(
+            glm::length(simulation.m_feedbackTorque) < 1e-6f,
+            "tank wall pressure incorrectly torqued a remote rigid body");
+    }
+
     void testDefaultCoupledScenarioRemainsStable() {
         CoupledScenarioMetrics const metrics = runDefaultCoupledScenario(240);
         require(
@@ -386,6 +416,7 @@ int main(int argc, char ** argv) {
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
+        testTankPressureDoesNotPushRigidBody();
         if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();
             testDefaultCoupledScenarioRemainsStable();
