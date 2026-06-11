@@ -47,8 +47,11 @@ namespace VCX::Labs::Final {
                 ImGui::PushID((int) i);
                 if (ImGui::TreeNode(("Body " + std::to_string(i)).c_str())) {
                     ImGui::ColorEdit3("Color", &b.color.x);
-                    if (ImGui::SliderFloat("Density", &b.density, 50, 5000)) b.ComputeMass();
+                    if (ImGui::SliderFloat("Density", &b.density, 300, 5000)) b.ComputeMass();
                     ImGui::SliderFloat("Radius", &b.radius, .02f, .25f);
+                    if (ImGui::SliderFloat("Radius", &b.radius, .02f, .25f)) {
+                        b.ComputeMass();
+                    }
                     ImGui::Text("Vel: (%.2f,%.2f,%.2f)", b.velocity.x, b.velocity.y, b.velocity.z);
                     ImGui::TreePop();
                 }
@@ -61,7 +64,7 @@ namespace VCX::Labs::Final {
             "Orange=floats, Green=neutral, Red=sinks, Yellow=very light.");
     }
 
-    // ©¤©¤ build particle octahedra (small spheres) ©¤©¤
+    // ── build particle octahedra (small spheres) ──
     void CaseFluidRigid::BuildFluidSurface() {
         float  r = _sim.dx * 0.18f; // particle visual radius
         size_t n = _sim.particles.size();
@@ -131,7 +134,7 @@ namespace VCX::Labs::Final {
         gl_using(_frame);
         glEnable(GL_DEPTH_TEST);
 
-        // ©¤©¤ fluid particles as small octahedra ©¤©¤
+        // ── fluid particles as small octahedra ──
         _verts.clear();
         _triIdx.clear();
         BuildFluidSurface();
@@ -142,7 +145,7 @@ namespace VCX::Labs::Final {
             _triItem.Draw({ _program.Use() });
         }
 
-        // ©¤©¤ rigid bodies ©¤©¤
+        // ── rigid bodies ──
         for (auto & b : _sim.bodies) {
             _verts.clear();
             _triIdx.clear();
@@ -155,7 +158,7 @@ namespace VCX::Labs::Final {
             }
         }
 
-        // ©¤©¤ wireframe ©¤©¤
+        // ── wireframe ──
         _lineVerts.clear();
         _lineIdx.clear();
         AddWireBox({ 0, 0, 0 }, { _sim.domainW, _sim.domainH, _sim.domainD });
