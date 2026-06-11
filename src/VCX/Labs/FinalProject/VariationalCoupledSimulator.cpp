@@ -247,6 +247,18 @@ namespace VCX::Labs::Final {
         }
 
         std::vector<glm::vec3> const intermediateVelocity = m_vel;
+        for (WallFace & wallFace : wallFaces) {
+            if (! wallFace.Candidate)
+                continue;
+
+            float const unconstrainedSeparationSpeed =
+                -wallFace.DivergenceSign
+                * (intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                   - wallFace.WallVelocity);
+            if (unconstrainedSeparationSpeed > 1e-5f)
+                wallFace.Contact = false;
+        }
+
         Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
         auto                         solveWithContacts    = [&]() {
             int const                           matrixSize = int(rowToCell.size());
@@ -448,7 +460,12 @@ namespace VCX::Labs::Final {
                 if (! wallFace.Candidate || ! wallFace.Contact)
                     continue;
 
-                if (pressure[wallFace.Row] < -1e-5) {
+                float const unconstrainedSeparationSpeed =
+                    -wallFace.DivergenceSign
+                    * (intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                       - wallFace.WallVelocity);
+                if (pressure[wallFace.Row] < -1e-5
+                    && unconstrainedSeparationSpeed > 1e-5f) {
                     wallFace.Contact = false;
                     removedNegativePressureContact = true;
                     changedActiveSet = true;

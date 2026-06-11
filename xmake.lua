@@ -151,3 +151,18 @@ target("lab4")
     if is_plat("windows") then
         add_cxflags("/EHsc")
     end
+
+target("lab4-tests")
+    set_kind("binary")
+    set_default(false)
+    add_packages("eigen")
+    add_packages("glm")
+    add_includedirs("src/VCX")
+    add_files("src/VCX/Labs/FinalProject/FluidSimulator.cpp")
+    add_files("src/VCX/Labs/FinalProject/SubgridSimulator.cpp")
+    add_files("src/VCX/Labs/FinalProject/FreeSurfaceSeparationSimulator.cpp")
+    add_files("src/VCX/Labs/FinalProject/VariationalCoupledSimulator.cpp")
+    add_files("src/VCX/Labs/FinalProject/tests/*.cpp")
+    if is_plat("windows") then
+        add_cxflags("/EHsc")
+    end
