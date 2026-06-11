@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <algorithm>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -86,7 +86,7 @@ namespace VCX::Labs::Final {
             add({ cx * .5f, domainH * .35f, cz }, 300, domainW * .065f, { 1, .45f, .15f });
             add({ cx, domainH * .45f, cz }, 1000, domainW * .055f, { .2f, .9f, .4f });
             add({ cx * 1.5f, domainH * .5f, cz }, 3000, domainW * .06f, { .9f, .15f, .2f });
-            add({ cx * .7f, domainH * .25f, cz * 1.3f }, 100, domainW * .05f, { 1, .9f, .1f });
+            //add({ cx * .7f, domainH * .25f, cz * 1.3f }, 100, domainW * .05f, { 1, .9f, .1f });
         }
 
         void Step() {
