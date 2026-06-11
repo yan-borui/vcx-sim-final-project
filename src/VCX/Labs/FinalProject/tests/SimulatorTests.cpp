@@ -314,36 +314,38 @@ namespace {
             "coupled solver must release negative-pressure wall suction");
     }
 
-    void testCoupledMovingBodyContactAndSeparation() {
-        glm::ivec3 const fluidCell { 3, 3, 3 };
-        glm::ivec3 const bodyFace { 4, 3, 3 };
+    void prepareSingleBodyWallCell(
+        VariationalCoupledSimulator & simulation,
+        RigidBody &                   body,
+        float                         bodyVelocity) {
+        simulation.setupScene(8);
+        body.Reset(
+            { 0.1f, -0.0625f, -0.0625f },
+            { bodyVelocity, 0.0f, 0.0f },
+            { 0.3f, 0.2f, 0.2f },
+            1.0f,
+            { 1.0f, 1.0f, 1.0f });
+        simulation.m_body = &body;
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+        simulation.m_type[offset(simulation, { 3, 3, 3 })] = Simulator::FLUID_CELL;
+    }
 
-        auto prepare = [&](VariationalCoupledSimulator & simulation, RigidBody & body, float bodyVelocity) {
-            simulation.setupScene(8);
-            body.Reset(
-                { 0.1f, -0.0625f, -0.0625f },
-                { bodyVelocity, 0.0f, 0.0f },
-                { 0.3f, 0.2f, 0.2f },
-                1.0f,
-                { 1.0f, 1.0f, 1.0f });
-            simulation.m_body = &body;
-            std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
-            std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
-            simulation.m_type[offset(simulation, fluidCell)] = Simulator::FLUID_CELL;
-        };
+    void testCoupledMovingBodyContactAndSeparation() {
+        glm::ivec3 const bodyFace { 4, 3, 3 };
 
         VariationalCoupledSimulator contactSimulation;
         RigidBody                   contactBody;
-        prepare(contactSimulation, contactBody, -0.5f);
+        prepareSingleBodyWallCell(contactSimulation, contactBody, -0.5f);
         contactSimulation.enableWallSeparation = true;
         contactSimulation.solveIncompressibility(200, 0.01f, 1.0f, false);
         require(
-            std::abs(contactSimulation.m_vel[offset(contactSimulation, bodyFace)].x + 0.5f) < 1e-4f,
-            "body moving into fluid must keep the normal velocity in contact");
+            contactSimulation.m_feedbackForce.x > 0.0f,
+            "contact pressure did not oppose a body moving into fluid");
 
         VariationalCoupledSimulator separationSimulation;
         RigidBody                   separationBody;
-        prepare(separationSimulation, separationBody, 0.5f);
+        prepareSingleBodyWallCell(separationSimulation, separationBody, 0.5f);
         separationSimulation.enableWallSeparation = true;
         separationSimulation.solveIncompressibility(200, 0.01f, 1.0f, false);
         float const fluidVelocity =
@@ -354,6 +356,35 @@ namespace {
         require(
             std::abs(fluidVelocity - separationBody.velocity.x) > 1e-3f,
             "body moving away from fluid incorrectly kept a sticking contact");
+    }
+
+    void testCoupledProjectionUsesUpdatedBodyVelocity() {
+        VariationalCoupledSimulator simulation;
+        RigidBody                   body;
+        prepareSingleBodyWallCell(simulation, body, -0.5f);
+        simulation.enableWallSeparation = false;
+
+        float constexpr dt = 0.01f;
+        simulation.solveIncompressibility(200, dt, 1.0f, false);
+
+        RigidBody projectedBody = body;
+        projectedBody.velocity +=
+            simulation.m_feedbackForce / projectedBody.mass * dt;
+        projectedBody.angularVelocity +=
+            projectedBody.GetInertiaWorldInv() * simulation.m_feedbackTorque * dt;
+
+        glm::ivec3 const bodyFace { 4, 3, 3 };
+        glm::vec3 const faceCenter =
+            (glm::vec3(bodyFace) + glm::vec3(0.0f, 0.5f, 0.5f))
+                * simulation.m_h
+            - glm::vec3(0.5f);
+        float const fluidVelocity =
+            simulation.m_vel[offset(simulation, bodyFace)].x;
+        float const projectedBodyVelocity =
+            projectedBody.GetVelocityAtPoint(faceCenter - projectedBody.position).x;
+        require(
+            std::abs(fluidVelocity - projectedBodyVelocity) < 1e-4f,
+            "coupled projection used the pre-pressure body velocity");
     }
 
     void testTankPressureDoesNotPushRigidBody() {
@@ -416,6 +447,7 @@ int main(int argc, char ** argv) {
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
+        testCoupledProjectionUsesUpdatedBodyVelocity();
         testTankPressureDoesNotPushRigidBody();
         if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();

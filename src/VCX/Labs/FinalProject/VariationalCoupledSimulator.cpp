@@ -271,6 +271,11 @@ namespace VCX::Labs::Final {
         Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
         Eigen::VectorXd              appliedPressure      = Eigen::VectorXd::Zero(int(rowToCell.size()));
         auto                         solveWithContacts    = [&]() {
+            struct RigidPressureJacobian {
+                glm::vec3 Linear { 0.0f };
+                glm::vec3 Angular { 0.0f };
+            };
+
             int const                           matrixSize = int(rowToCell.size());
             Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
             std::vector<Eigen::Triplet<double>> triplets;
@@ -326,6 +331,43 @@ namespace VCX::Labs::Final {
 
                 if (! hasDirichletBoundary)
                     pinnedRows[component.front()] = 1;
+            }
+
+            bool const dynamicBody =
+                m_body && ! m_body->isStatic && m_body->mass > 1e-6f;
+            std::vector<RigidPressureJacobian> rigidJacobian(matrixSize);
+            std::vector<int>                   rigidRows;
+            if (dynamicBody) {
+                for (WallFace const & wallFace : wallFaces) {
+                    if (! wallFace.BodyBoundary
+                        || (wallFace.Candidate && ! wallFace.Contact)
+                        || pinnedRows[wallFace.Row])
+                        continue;
+
+                    glm::ivec3 const face {
+                        wallFace.FaceIndex % m_iCellX,
+                        (wallFace.FaceIndex / m_iCellX) % m_iCellY,
+                        wallFace.FaceIndex / (m_iCellX * m_iCellY),
+                    };
+                    glm::vec3 direction(0.0f);
+                    direction[wallFace.Direction] = wallFace.DivergenceSign;
+                    glm::vec3 const weightedDirection =
+                        wallFace.BoundaryWeight * direction;
+                    glm::vec3 const lever =
+                        faceCenter(face, wallFace.Direction) - m_body->position;
+                    rigidJacobian[wallFace.Row].Linear += weightedDirection;
+                    rigidJacobian[wallFace.Row].Angular +=
+                        glm::cross(lever, weightedDirection);
+                }
+
+                for (int row = 0; row < matrixSize; ++row) {
+                    if (glm::dot(rigidJacobian[row].Linear, rigidJacobian[row].Linear)
+                            + glm::dot(rigidJacobian[row].Angular, rigidJacobian[row].Angular)
+                        > 1e-12f)
+                        rigidRows.push_back(row);
+                }
+                triplets.reserve(
+                    matrixSize * 7 + rigidRows.size() * rigidRows.size());
             }
 
             for (int row = 0; row < matrixSize; ++row) {
@@ -398,6 +440,30 @@ namespace VCX::Labs::Final {
                 rhs[row] = -weightedDivergence;
             }
 
+            if (dynamicBody) {
+                float const cellVolume = m_h * m_h * m_h;
+                float const invMass    = 1.0f / m_body->mass;
+                glm::mat3 const inertiaInv = m_body->GetInertiaWorldInv();
+                for (int const row : rigidRows) {
+                    RigidPressureJacobian const & rowJacobian =
+                        rigidJacobian[row];
+                    for (int const column : rigidRows) {
+                        RigidPressureJacobian const & columnJacobian =
+                            rigidJacobian[column];
+                        double const coupling = double(cellVolume) * (
+                            double(invMass)
+                                * double(glm::dot(
+                                    rowJacobian.Linear,
+                                    columnJacobian.Linear))
+                            + double(glm::dot(
+                                rowJacobian.Angular,
+                                inertiaInv * columnJacobian.Angular)));
+                        if (std::abs(coupling) > 1e-12)
+                            triplets.emplace_back(row, column, coupling);
+                    }
+                }
+            }
+
             matrix.setFromTriplets(triplets.begin(), triplets.end());
             Eigen::ConjugateGradient<
                 Eigen::SparseMatrix<double>,
@@ -425,11 +491,45 @@ namespace VCX::Labs::Final {
                         std::max(appliedPressure[wallFace.Row], 0.0);
             }
 
+            glm::vec3 bodyLinearVelocityDelta(0.0f);
+            glm::vec3 bodyAngularVelocityDelta(0.0f);
+            if (dynamicBody) {
+                glm::vec3 linearImpulse(0.0f);
+                glm::vec3 angularImpulse(0.0f);
+                float const cellVolume = m_h * m_h * m_h;
+                for (int const row : rigidRows) {
+                    float const pressureValue = float(appliedPressure[row]);
+                    linearImpulse +=
+                        cellVolume * rigidJacobian[row].Linear * pressureValue;
+                    angularImpulse +=
+                        cellVolume * rigidJacobian[row].Angular * pressureValue;
+                }
+                bodyLinearVelocityDelta = linearImpulse / m_body->mass;
+                bodyAngularVelocityDelta =
+                    m_body->GetInertiaWorldInv() * angularImpulse;
+            }
+
             m_vel = intermediateVelocity;
             for (WallFace const & wallFace : wallFaces) {
-                if (! wallFace.Candidate || wallFace.Contact)
-                    m_vel[wallFace.FaceIndex][wallFace.Direction] =
-                        wallFace.WallVelocity;
+                if (wallFace.Candidate && ! wallFace.Contact)
+                    continue;
+
+                float finalWallVelocity = wallFace.WallVelocity;
+                if (dynamicBody && wallFace.BodyBoundary) {
+                    glm::ivec3 const face {
+                        wallFace.FaceIndex % m_iCellX,
+                        (wallFace.FaceIndex / m_iCellX) % m_iCellY,
+                        wallFace.FaceIndex / (m_iCellX * m_iCellY),
+                    };
+                    glm::vec3 const lever =
+                        faceCenter(face, wallFace.Direction) - m_body->position;
+                    finalWallVelocity +=
+                        (bodyLinearVelocityDelta
+                         + glm::cross(bodyAngularVelocityDelta, lever))
+                            [wallFace.Direction];
+                }
+                m_vel[wallFace.FaceIndex][wallFace.Direction] =
+                    finalWallVelocity;
             }
 
             for (int row = 0; row < matrixSize; ++row) {
