@@ -25,6 +25,10 @@ namespace VCX::Labs::Final {
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
+
+        // Particle-only surfaces have no level-set distance; use midpoint ghost
+        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
+        constexpr float FreeSurfaceGhostScale = 2.0f;
     }
 
     void FreeSurfaceSeparationSimulator::setupScene(int res) {
@@ -301,17 +305,22 @@ namespace VCX::Labs::Final {
                             : wallFace.WallVelocity;
                         divergence += side.DivergenceSign * double(velocity);
                         if (wallFace.Candidate && ! wallFace.Contact)
-                            diagonal += 1.0;
+                            diagonal += FreeSurfaceGhostScale;
                         continue;
                     }
 
                     divergence += side.DivergenceSign
                         * double(intermediateVelocity[faceIdx][side.Direction]);
-                    diagonal += 1.0;
-                    if (m_type[gridOffset(neighbor)] == FLUID_CELL) {
-                        int const neighborRow = cellToRow[gridOffset(neighbor)];
-                        if (neighborRow >= 0 && ! pinnedRows[neighborRow])
+                    int const neighborIdx = gridOffset(neighbor);
+                    int const neighborRow = cellToRow[neighborIdx];
+                    if (neighborRow >= 0) {
+                        diagonal += 1.0;
+                        if (! pinnedRows[neighborRow])
                             triplets.emplace_back(row, neighborRow, -1.0);
+                    } else if (m_type[neighborIdx] == EMPTY_CELL) {
+                        diagonal += FreeSurfaceGhostScale;
+                    } else {
+                        diagonal += 1.0;
                     }
                 }
 
@@ -354,16 +363,21 @@ namespace VCX::Labs::Final {
                 for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
                     FaceNeighbor const & side    = FaceNeighbors[sideIndex];
                     glm::ivec3 const     face    = cell + side.FaceOffset;
+                    glm::ivec3 const     neighbor = cell + side.CellOffset;
                     int const            faceIdx = gridOffset(face);
+                    float                pressureScale = 1.0f;
                     int const            wallFaceIndex =
                         wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
                     if (wallFaceIndex >= 0) {
                         WallFace const & wallFace = wallFaces[wallFaceIndex];
                         if (! wallFace.Candidate || wallFace.Contact)
                             continue;
+                        pressureScale = FreeSurfaceGhostScale;
+                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                        pressureScale = FreeSurfaceGhostScale;
                     }
                     m_vel[faceIdx][side.Direction] +=
-                        side.DivergenceSign * cellPressure;
+                        side.DivergenceSign * pressureScale * cellPressure;
                 }
             }
         };

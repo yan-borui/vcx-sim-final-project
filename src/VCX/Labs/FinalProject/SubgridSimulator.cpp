@@ -24,6 +24,10 @@ namespace VCX::Labs::Final {
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
+
+        // Particle-only surfaces have no level-set distance; use midpoint ghost
+        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
+        constexpr float FreeSurfaceGhostScale = 2.0f;
     }
 
     void SubgridSimulator::setupScene(int res) {
@@ -319,12 +323,18 @@ namespace VCX::Labs::Final {
 
                 weightedDivergence += side.DivergenceSign
                     * double(weight) * double(m_vel[faceIdx][side.Direction]);
-                diagonal += weight;
 
                 int const neighborIdx    = index2GridOffset(neighbor);
                 int const neighborColumn = cellToMatrix[neighborIdx];
-                if (neighborColumn >= 0 && ! pinnedRows[neighborColumn])
-                    triplets.emplace_back(row, neighborColumn, -double(weight));
+                if (neighborColumn >= 0) {
+                    diagonal += weight;
+                    if (! pinnedRows[neighborColumn])
+                        triplets.emplace_back(row, neighborColumn, -double(weight));
+                } else if (m_type[neighborIdx] == EMPTY_CELL) {
+                    diagonal += weight * FreeSurfaceGhostScale;
+                } else {
+                    diagonal += weight;
+                }
             }
 
             if (diagonal <= 1e-8) {
@@ -375,7 +385,14 @@ namespace VCX::Labs::Final {
                 glm::ivec3 const neighbor = cell + side.CellOffset;
                 if (faceWeight(side.Direction, faceIdx) <= 1e-6f || isTankSolidCell(neighbor))
                     continue;
-                m_vel[faceIdx][side.Direction] += side.DivergenceSign * pressureValue;
+
+                int const   neighborIdx = index2GridOffset(neighbor);
+                float const pressureScale =
+                    cellToMatrix[neighborIdx] < 0 && m_type[neighborIdx] == EMPTY_CELL
+                    ? FreeSurfaceGhostScale
+                    : 1.0f;
+                m_vel[faceIdx][side.Direction] +=
+                    side.DivergenceSign * pressureScale * pressureValue;
             }
         }
     }

@@ -24,6 +24,10 @@ namespace VCX::Labs::Final {
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
+
+        // Particle-only surfaces have no level-set distance; use midpoint ghost
+        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
+        constexpr float FreeSurfaceGhostScale = 2.0f;
     }
 
     void VariationalCoupledSimulator::setupScene(int res) {
@@ -330,7 +334,7 @@ namespace VCX::Labs::Final {
                         weightedDivergence += side.DivergenceSign
                             * double(wallFace.BoundaryWeight) * double(velocity);
                         if (wallFace.Candidate && ! wallFace.Contact)
-                            diagonal += wallFace.BoundaryWeight;
+                            diagonal += wallFace.BoundaryWeight * FreeSurfaceGhostScale;
                         continue;
                     }
 
@@ -344,11 +348,18 @@ namespace VCX::Labs::Final {
                     weightedDivergence += side.DivergenceSign
                         * double(openWeight)
                         * double(intermediateVelocity[faceIdx][side.Direction]);
-                    diagonal += openWeight;
 
-                    int const neighborRow = cellToRow[gridOffset(neighbor)];
-                    if (neighborRow >= 0 && ! pinnedRows[neighborRow])
-                        triplets.emplace_back(row, neighborRow, -double(openWeight));
+                    int const neighborIdx = gridOffset(neighbor);
+                    int const neighborRow = cellToRow[neighborIdx];
+                    if (neighborRow >= 0) {
+                        diagonal += openWeight;
+                        if (! pinnedRows[neighborRow])
+                            triplets.emplace_back(row, neighborRow, -double(openWeight));
+                    } else if (m_type[neighborIdx] == EMPTY_CELL) {
+                        diagonal += openWeight * FreeSurfaceGhostScale;
+                    } else {
+                        diagonal += openWeight;
+                    }
                 }
 
                 if (compensateDrift && m_particleRestDensity > 0.0f) {
@@ -400,20 +411,24 @@ namespace VCX::Labs::Final {
                     glm::ivec3 const     face     = cell + side.FaceOffset;
                     glm::ivec3 const     neighbor = cell + side.CellOffset;
                     int const            faceIdx  = gridOffset(face);
+                    float                pressureScale = 1.0f;
                     int const            wallFaceIndex =
                         wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
                     if (wallFaceIndex >= 0) {
                         WallFace const & wallFace = wallFaces[wallFaceIndex];
                         if (! wallFace.Candidate || wallFace.Contact)
                             continue;
+                        pressureScale = FreeSurfaceGhostScale;
                     } else if (
                         isSolidPressureCell(neighbor)
                         || faceWeight(side.Direction, faceIdx) <= 1e-6f) {
                         continue;
+                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                        pressureScale = FreeSurfaceGhostScale;
                     }
 
                     m_vel[faceIdx][side.Direction] +=
-                        side.DivergenceSign * pressureValue;
+                        side.DivergenceSign * pressureScale * pressureValue;
                 }
             }
         };
