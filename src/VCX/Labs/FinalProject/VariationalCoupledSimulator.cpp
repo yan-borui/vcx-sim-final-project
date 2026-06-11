@@ -163,7 +163,6 @@ namespace VCX::Labs::Final {
         float dt,
         float overRelaxation,
         bool  compensateDrift) {
-        (void) dt;
         (void) overRelaxation;
 
         updateFaceFluidFractions();
@@ -465,46 +464,49 @@ namespace VCX::Labs::Final {
         for (int row = 0; row < int(rowToCell.size()); ++row)
             m_p[rowToCell[row]] = float(pressure[row]);
 
-        applyRigidBodyFeedback(rowToCell);
+        std::vector<BoundaryPressureSample> boundarySamples;
+        boundarySamples.reserve(wallFaces.size());
+        for (WallFace const & wallFace : wallFaces) {
+            boundarySamples.push_back(BoundaryPressureSample {
+                .PressureCell    = rowToCell[wallFace.Row],
+                .FaceIndex       = wallFace.FaceIndex,
+                .Direction       = wallFace.Direction,
+                .DivergenceSign  = wallFace.DivergenceSign,
+                .BoundaryWeight  = wallFace.BoundaryWeight,
+                .Contact         = ! wallFace.Candidate || wallFace.Contact,
+            });
+        }
+
+        applyRigidBodyFeedback(boundarySamples, dt);
     }
 
     void VariationalCoupledSimulator::applyRigidBodyFeedback(
-        std::vector<int> const & pressureCells) {
+        std::vector<BoundaryPressureSample> const & boundarySamples,
+        float                                      dt) {
         if (! m_body)
             return;
 
-        for (int idx : pressureCells) {
-            float const pressure = m_p[idx];
+        float const invDt = 1.0f / std::max(dt, 1e-6f);
+        for (BoundaryPressureSample const & sample : boundarySamples) {
+            if (! sample.Contact || sample.BoundaryWeight <= 1e-6f)
+                continue;
+
+            float const pressure = m_p[sample.PressureCell];
             if (pressure <= 0.0f)
                 continue;
 
-            glm::ivec3 const cell {
-                idx % m_iCellX,
-                (idx / m_iCellX) % m_iCellY,
-                idx / (m_iCellX * m_iCellY),
+            glm::ivec3 const face {
+                sample.FaceIndex % m_iCellX,
+                (sample.FaceIndex / m_iCellX) % m_iCellY,
+                sample.FaceIndex / (m_iCellX * m_iCellY),
             };
-            glm::vec3 const cellPosition = pressureCellCenter(cell);
-            if (m_body->GetSDF(cellPosition) >= m_h)
-                continue;
-
-            float const     epsilon = 0.001f;
-            glm::vec3 const gradient {
-                m_body->GetSDF(cellPosition + glm::vec3(epsilon, 0, 0))
-                    - m_body->GetSDF(cellPosition - glm::vec3(epsilon, 0, 0)),
-                m_body->GetSDF(cellPosition + glm::vec3(0, epsilon, 0))
-                    - m_body->GetSDF(cellPosition - glm::vec3(0, epsilon, 0)),
-                m_body->GetSDF(cellPosition + glm::vec3(0, 0, epsilon))
-                    - m_body->GetSDF(cellPosition - glm::vec3(0, 0, epsilon)),
-            };
-            float const gradientLength = glm::length(gradient);
-            if (gradientLength <= 1e-6f)
-                continue;
-
-            glm::vec3 const normal = gradient / gradientLength;
-            float const     area   = m_h * m_h;
-            glm::vec3 const force  = -normal * pressure * area * 45.0f;
+            glm::vec3 const applicationPoint = faceCenter(face, sample.Direction);
+            glm::vec3       forceDirection(0.0f);
+            forceDirection[sample.Direction] = sample.DivergenceSign;
+            float const     area  = sample.BoundaryWeight * m_h * m_h;
+            glm::vec3 const force = forceDirection * pressure * area * invDt;
             m_feedbackForce += force;
-            m_feedbackTorque += glm::cross(cellPosition - m_body->position, force);
+            m_feedbackTorque += glm::cross(applicationPoint - m_body->position, force);
         }
     }
 } // namespace VCX::Labs::Final

@@ -20,6 +20,15 @@ namespace VCX::Labs::Final {
             bool  compensateDrift) override;
 
     private:
+        struct BoundaryPressureSample {
+            int   PressureCell;
+            int   FaceIndex;
+            int   Direction;
+            float DivergenceSign;
+            float BoundaryWeight;
+            bool  Contact;
+        };
+
         std::array<std::vector<float>, 3> _faceFluidFraction;
 
         bool      isValidCell(glm::ivec3 const & cell) const;
@@ -34,6 +43,8 @@ namespace VCX::Labs::Final {
         float     solidVelocity(glm::ivec3 const & face, int dir, glm::ivec3 const & solidCell) const;
 
         void updateFaceFluidFractions();
-        void applyRigidBodyFeedback(std::vector<int> const & pressureCells);
+        void applyRigidBodyFeedback(
+            std::vector<BoundaryPressureSample> const & boundarySamples,
+            float                                      dt);
     };
 } // namespace VCX::Labs::Final
