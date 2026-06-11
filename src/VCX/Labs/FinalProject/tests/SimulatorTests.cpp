@@ -198,6 +198,40 @@ namespace {
             "negative wall pressure must classify at least one wall face as separating");
     }
 
+    void testGhostFluidUsesInterfaceDistance() {
+        FreeSurfaceSeparationSimulator simulation;
+        simulation.setupScene(8);
+        simulation.enableWallSeparation = false;
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+
+        glm::ivec3 const fluidCell { 3, 3, 3 };
+        simulation.m_type[offset(simulation, fluidCell)] = Simulator::FLUID_CELL;
+        glm::ivec3 const solidNeighbors[] = {
+            { 2, 3, 3 },
+            { 3, 2, 3 },
+            { 3, 4, 3 },
+            { 3, 3, 2 },
+            { 3, 3, 4 },
+        };
+        for (glm::ivec3 const neighbor : solidNeighbors)
+            simulation.m_s[offset(simulation, neighbor)] = 0.0f;
+
+        glm::vec3 const fluidCenter =
+            (glm::vec3(fluidCell) + glm::vec3(0.5f)) * simulation.m_h
+            - glm::vec3(0.5f);
+        simulation.m_iNumSpheres = 1;
+        simulation.m_particlePos.assign(1, fluidCenter);
+        simulation.m_particleVel.assign(1, glm::vec3(0.0f));
+        simulation.m_vel[offset(simulation, fluidCell + glm::ivec3(1, 0, 0))].x = 1.0f;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        require(
+            std::abs(simulation.m_p[offset(simulation, fluidCell)] + 0.75f) < 1e-4f,
+            "ghost-fluid pressure did not use the reconstructed interface distance");
+    }
+
     void testWallSeparationActiveSetConverges() {
         FreeSurfaceSeparationSimulator simulation;
         simulation.setupScene(24);
@@ -443,6 +477,7 @@ int main(int argc, char ** argv) {
         testOutwardWallSeparation();
         testInwardWallContact();
         testNegativeWallPressureSeparates();
+        testGhostFluidUsesInterfaceDistance();
         testWallSeparationActiveSetConverges();
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();

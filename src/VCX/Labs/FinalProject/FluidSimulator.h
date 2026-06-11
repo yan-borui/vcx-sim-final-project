@@ -75,6 +75,11 @@ namespace VCX::Labs::Final {
         void pushParticlesApart(int numIters);
         void handleParticleCollisions();
         void updateParticleDensity();
+        std::vector<float> buildParticleLevelSet() const;
+        float ghostFluidPressureScale(
+            std::vector<float> const & levelSet,
+            int                        fluidCell,
+            int                        airCell) const;
 
         virtual void        transferVelocities(bool toGrid, float flipRatio);
         virtual void        solveIncompressibility(int numIters, float dt, float overRelaxation, bool compensateDrift);

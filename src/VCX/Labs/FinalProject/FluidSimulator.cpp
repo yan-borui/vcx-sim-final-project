@@ -1,6 +1,69 @@
 #include "Labs/FinalProject/FluidSimulator.h"
 
 namespace VCX::Labs::Final {
+    std::vector<float> Simulator::buildParticleLevelSet() const {
+        float const farDistance         = 3.0f * m_h;
+        float const reconstructionRadius = 0.75f * m_h;
+        std::vector<float> levelSet(m_iNumCells, farDistance);
+
+        auto offset = [&](glm::ivec3 const cell) {
+            return cell.x + m_iCellX * (cell.y + m_iCellY * cell.z);
+        };
+
+        for (glm::vec3 const particle : m_particlePos) {
+            glm::ivec3 const base = glm::clamp(
+                glm::ivec3((particle + glm::vec3(0.5f)) * m_fInvSpacing),
+                glm::ivec3(0),
+                glm::ivec3(m_iCellX - 1, m_iCellY - 1, m_iCellZ - 1));
+            for (int z = -2; z <= 2; ++z) {
+                for (int y = -2; y <= 2; ++y) {
+                    for (int x = -2; x <= 2; ++x) {
+                        glm::ivec3 const cell = base + glm::ivec3(x, y, z);
+                        if (cell.x < 0 || cell.x >= m_iCellX
+                            || cell.y < 0 || cell.y >= m_iCellY
+                            || cell.z < 0 || cell.z >= m_iCellZ)
+                            continue;
+
+                        glm::vec3 const center =
+                            (glm::vec3(cell) + glm::vec3(0.5f)) * m_h
+                            - glm::vec3(0.5f);
+                        int const idx = offset(cell);
+                        levelSet[idx] = std::min(
+                            levelSet[idx],
+                            glm::length(center - particle) - reconstructionRadius);
+                    }
+                }
+            }
+        }
+
+        for (int idx = 0; idx < m_iNumCells; ++idx) {
+            if (m_type[idx] == FLUID_CELL && levelSet[idx] >= 0.0f)
+                levelSet[idx] = -0.5f * m_h;
+            else if (m_type[idx] == EMPTY_CELL && levelSet[idx] <= 0.0f)
+                levelSet[idx] = 0.5f * m_h;
+        }
+        return levelSet;
+    }
+
+    float Simulator::ghostFluidPressureScale(
+        std::vector<float> const & levelSet,
+        int                        fluidCell,
+        int                        airCell) const {
+        if (fluidCell < 0 || fluidCell >= int(levelSet.size())
+            || airCell < 0 || airCell >= int(levelSet.size()))
+            return 2.0f;
+
+        float const minimumDistance = 1e-4f * m_h;
+        float const fluidDistance =
+            std::min(levelSet[fluidCell], -minimumDistance);
+        float const airDistance =
+            std::max(levelSet[airCell], minimumDistance);
+        float const theta = std::clamp(
+            -fluidDistance / (airDistance - fluidDistance),
+            0.1f,
+            1.0f);
+        return 1.0f / theta;
+    }
 
     void Simulator::integrateParticles(float timeStep) {
         for (int i = 0; i < m_iNumSpheres; ++i) {

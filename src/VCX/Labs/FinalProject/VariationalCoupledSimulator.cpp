@@ -25,9 +25,7 @@ namespace VCX::Labs::Final {
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
 
-        // Particle-only surfaces have no level-set distance; use midpoint ghost
-        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
-        constexpr float FreeSurfaceGhostScale = 2.0f;
+        constexpr float WallSeparationGhostScale = 2.0f;
     }
 
     void VariationalCoupledSimulator::setupScene(int res) {
@@ -170,6 +168,7 @@ namespace VCX::Labs::Final {
         (void) overRelaxation;
 
         updateFaceFluidFractions();
+        std::vector<float> const liquidLevelSet = buildParticleLevelSet();
 
         std::vector<int> cellToRow(m_iNumCells, -1);
         std::vector<int> rowToCell;
@@ -398,7 +397,8 @@ namespace VCX::Labs::Final {
                         weightedDivergence += side.DivergenceSign
                             * double(wallFace.BoundaryWeight) * double(velocity);
                         if (wallFace.Candidate && ! wallFace.Contact)
-                            diagonal += wallFace.BoundaryWeight * FreeSurfaceGhostScale;
+                            diagonal +=
+                                wallFace.BoundaryWeight * WallSeparationGhostScale;
                         continue;
                     }
 
@@ -420,7 +420,10 @@ namespace VCX::Labs::Final {
                         if (! pinnedRows[neighborRow])
                             triplets.emplace_back(row, neighborRow, -double(openWeight));
                     } else if (m_type[neighborIdx] == EMPTY_CELL) {
-                        diagonal += openWeight * FreeSurfaceGhostScale;
+                        diagonal += openWeight * ghostFluidPressureScale(
+                            liquidLevelSet,
+                            idx,
+                            neighborIdx);
                     } else {
                         diagonal += openWeight;
                     }
@@ -547,13 +550,16 @@ namespace VCX::Labs::Final {
                         WallFace const & wallFace = wallFaces[wallFaceIndex];
                         if (! wallFace.Candidate || wallFace.Contact)
                             continue;
-                        pressureScale = FreeSurfaceGhostScale;
+                        pressureScale = WallSeparationGhostScale;
                     } else if (
                         isSolidPressureCell(neighbor)
                         || faceWeight(side.Direction, faceIdx) <= 1e-6f) {
                         continue;
                     } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                        pressureScale = FreeSurfaceGhostScale;
+                        pressureScale = ghostFluidPressureScale(
+                            liquidLevelSet,
+                            rowToCell[row],
+                            gridOffset(neighbor));
                     }
 
                     m_vel[faceIdx][side.Direction] +=

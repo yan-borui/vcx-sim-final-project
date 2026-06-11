@@ -25,9 +25,6 @@ namespace VCX::Labs::Final {
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
 
-        // Particle-only surfaces have no level-set distance; use midpoint ghost
-        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
-        constexpr float FreeSurfaceGhostScale = 2.0f;
     }
 
     void SubgridSimulator::setupScene(int res) {
@@ -218,6 +215,7 @@ namespace VCX::Labs::Final {
         (void) compensateDrift;
 
         updateFaceFluidFractions();
+        std::vector<float> const liquidLevelSet = buildParticleLevelSet();
 
         std::vector<int> cellToMatrix(m_iNumCells, -1);
         std::vector<int> matrixToCell;
@@ -331,7 +329,10 @@ namespace VCX::Labs::Final {
                     if (! pinnedRows[neighborColumn])
                         triplets.emplace_back(row, neighborColumn, -double(weight));
                 } else if (m_type[neighborIdx] == EMPTY_CELL) {
-                    diagonal += weight * FreeSurfaceGhostScale;
+                    diagonal += weight * ghostFluidPressureScale(
+                        liquidLevelSet,
+                        idx,
+                        neighborIdx);
                 } else {
                     diagonal += weight;
                 }
@@ -389,7 +390,7 @@ namespace VCX::Labs::Final {
                 int const   neighborIdx = index2GridOffset(neighbor);
                 float const pressureScale =
                     cellToMatrix[neighborIdx] < 0 && m_type[neighborIdx] == EMPTY_CELL
-                    ? FreeSurfaceGhostScale
+                    ? ghostFluidPressureScale(liquidLevelSet, idx, neighborIdx)
                     : 1.0f;
                 m_vel[faceIdx][side.Direction] +=
                     side.DivergenceSign * pressureScale * pressureValue;

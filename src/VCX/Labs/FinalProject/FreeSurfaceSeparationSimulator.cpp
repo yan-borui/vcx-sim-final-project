@@ -26,9 +26,7 @@ namespace VCX::Labs::Final {
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
 
-        // Particle-only surfaces have no level-set distance; use midpoint ghost
-        // pressure (theta = 0.5) instead of placing p=0 one full cell away.
-        constexpr float FreeSurfaceGhostScale = 2.0f;
+        constexpr float WallSeparationGhostScale = 2.0f;
     }
 
     void FreeSurfaceSeparationSimulator::setupScene(int res) {
@@ -150,6 +148,7 @@ namespace VCX::Labs::Final {
         (void) overRelaxation;
         (void) compensateDrift;
 
+        std::vector<float> const liquidLevelSet = buildParticleLevelSet();
         std::vector<int> cellToRow(m_iNumCells, -1);
         std::vector<int> rowToCell;
         rowToCell.reserve(m_iNumCells / 3);
@@ -320,7 +319,7 @@ namespace VCX::Labs::Final {
                             : wallFace.WallVelocity;
                         divergence += side.DivergenceSign * double(velocity);
                         if (wallFace.Candidate && ! wallFace.Contact)
-                            diagonal += FreeSurfaceGhostScale;
+                            diagonal += WallSeparationGhostScale;
                         continue;
                     }
 
@@ -333,7 +332,10 @@ namespace VCX::Labs::Final {
                         if (! pinnedRows[neighborRow])
                             triplets.emplace_back(row, neighborRow, -1.0);
                     } else if (m_type[neighborIdx] == EMPTY_CELL) {
-                        diagonal += FreeSurfaceGhostScale;
+                        diagonal += ghostFluidPressureScale(
+                            liquidLevelSet,
+                            rowToCell[row],
+                            neighborIdx);
                     } else {
                         diagonal += 1.0;
                     }
@@ -394,9 +396,12 @@ namespace VCX::Labs::Final {
                         WallFace const & wallFace = wallFaces[wallFaceIndex];
                         if (! wallFace.Candidate || wallFace.Contact)
                             continue;
-                        pressureScale = FreeSurfaceGhostScale;
+                        pressureScale = WallSeparationGhostScale;
                     } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                        pressureScale = FreeSurfaceGhostScale;
+                        pressureScale = ghostFluidPressureScale(
+                            liquidLevelSet,
+                            rowToCell[row],
+                            gridOffset(neighbor));
                     }
                     m_vel[faceIdx][side.Direction] +=
                         side.DivergenceSign * pressureScale * cellPressure;
