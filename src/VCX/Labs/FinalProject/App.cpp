@@ -3,10 +3,7 @@
 namespace VCX::Labs::FluidSimulation {
     App::App():
         _ui(Labs::Common::UIOptions {}),
-        _caseFluid({ Assets::ExampleScene::Fluid }),
-        _caseSubgrid({ Assets::ExampleScene::Fluid }),
-        _caseFreeSurfaceSeparation({ Assets::ExampleScene::Fluid })
-        {
+        _caseFluid({ Assets::ExampleScene::Fluid }) {
     }
 
     void App::OnFrame() {
