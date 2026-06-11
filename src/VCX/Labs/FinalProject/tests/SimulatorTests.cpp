@@ -3,6 +3,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "Labs/FinalProject/FreeSurfaceSeparationSimulator.h"
@@ -236,14 +237,39 @@ namespace {
         simulation.setupScene(24);
         simulation.enableWallSeparation = true;
 
+        glm::ivec3 const neighborOffsets[] = {
+            { -1,  0,  0 },
+            {  1,  0,  0 },
+            {  0, -1,  0 },
+            {  0,  1,  0 },
+            {  0,  0, -1 },
+            {  0,  0,  1 },
+        };
+        glm::ivec3 const faceOffsets[] = {
+            { 0, 0, 0 },
+            { 1, 0, 0 },
+            { 0, 0, 0 },
+            { 0, 1, 0 },
+            { 0, 0, 0 },
+            { 0, 0, 1 },
+        };
+        int const   directions[]      = { 0, 0, 1, 1, 2, 2 };
+        float const divergenceSigns[] = { -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f };
+
         for (int frame = 0; frame < 20; ++frame) {
             simulation.SimulateTimestep(0.008f);
             require(
                 simulation.wallSeparationActiveSetIterations < 128,
                 "wall separation active set hit the iteration cap");
-            require(
-                simulation.minimumContactPressure >= -1e-4f,
-                "wall separation kept negative contact pressure");
+            if (simulation.minimumContactPressure < -1e-4f) {
+                throw std::runtime_error(
+                    "wall separation kept contact pressure "
+                    + std::to_string(simulation.minimumContactPressure)
+                    + " at frame " + std::to_string(frame)
+                    + " after "
+                    + std::to_string(simulation.wallSeparationActiveSetIterations)
+                    + " active-set iterations");
+            }
             require(
                 std::all_of(
                     simulation.m_particlePos.begin(),
@@ -251,6 +277,54 @@ namespace {
                     isFinite),
                 "wall separation produced a non-finite particle position");
             require(std::isfinite(simulation.pressureResidual), "wall separation solve failed");
+
+            float maximumDivergence = 0.0f;
+            for (int idx = 0; idx < simulation.m_iNumCells; ++idx) {
+                if (simulation.m_type[idx] != Simulator::FLUID_CELL)
+                    continue;
+
+                glm::ivec3 const cell {
+                    idx % simulation.m_iCellX,
+                    (idx / simulation.m_iCellX) % simulation.m_iCellY,
+                    idx / (simulation.m_iCellX * simulation.m_iCellY),
+                };
+                bool touchesSolid = false;
+                bool touchesAir   = false;
+
+                for (int side = 0; side < 6; ++side) {
+                    glm::ivec3 const neighbor = cell + neighborOffsets[side];
+                    bool const solid =
+                        neighbor.x < 0 || neighbor.x >= simulation.m_iCellX
+                        || neighbor.y < 0 || neighbor.y >= simulation.m_iCellY
+                        || neighbor.z < 0 || neighbor.z >= simulation.m_iCellZ
+                        || simulation.m_s[offset(simulation, neighbor)] <= 0.0f;
+                    if (! solid) {
+                        touchesAir = touchesAir
+                            || simulation.m_type[offset(simulation, neighbor)]
+                                == Simulator::EMPTY_CELL;
+                        continue;
+                    }
+                    touchesSolid = true;
+
+                    glm::ivec3 const face = cell + faceOffsets[side];
+                    float const separationSpeed =
+                        -divergenceSigns[side]
+                        * simulation.m_vel[offset(simulation, face)][directions[side]];
+                    require(
+                        separationSpeed >= -2e-4f,
+                        "wall separation allowed fluid to penetrate a wall");
+                }
+                if (! (touchesSolid && touchesAir)) {
+                    maximumDivergence =
+                        std::max(maximumDivergence, std::abs(divergence(simulation, cell)));
+                }
+            }
+            if (maximumDivergence >= 2e-3f) {
+                throw std::runtime_error(
+                    "wall separation projection left divergence "
+                    + std::to_string(maximumDivergence)
+                    + " at frame " + std::to_string(frame));
+            }
         }
     }
 
