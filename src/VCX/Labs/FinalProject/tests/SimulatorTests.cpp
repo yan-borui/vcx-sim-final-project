@@ -65,22 +65,7 @@ namespace {
         CoupledScenarioMetrics metrics;
         float constexpr       dt = 0.016f;
         for (int frame = 0; frame < frameCount; ++frame) {
-            simulation.SimulateTimestep(dt);
-            require(simulation.pressureSolveSucceeded, "default coupled pressure solve failed");
-
-            glm::vec3 const totalForce =
-                glm::vec3(0.0f, -9.81f, 0.0f) * body.mass
-                + simulation.m_feedbackForce;
-            body.velocity += totalForce / std::max(body.mass, 1e-6f) * dt;
-
-            if (body.position.y < 0.1f) {
-                body.velocity *= 0.96f;
-                body.angularVelocity *= 0.95f;
-            }
-
             body.position += body.velocity * dt;
-            body.angularVelocity +=
-                body.GetInertiaWorldInv() * simulation.m_feedbackTorque * dt;
             if (glm::length(body.angularVelocity) > 0.001f) {
                 glm::vec3 const axis  = glm::normalize(body.angularVelocity);
                 float const     angle = glm::length(body.angularVelocity) * dt;
@@ -99,6 +84,20 @@ namespace {
                     body.velocity[direction] *= -0.5f;
                 }
             }
+
+            if (body.position.y < 0.1f) {
+                body.velocity *= 0.96f;
+                body.angularVelocity *= 0.95f;
+            }
+
+            body.velocity += glm::vec3(0.0f, -9.81f, 0.0f) * dt;
+
+            simulation.SimulateTimestep(dt);
+            require(simulation.pressureSolveSucceeded, "default coupled pressure solve failed");
+
+            body.velocity += simulation.m_feedbackForce / body.mass * dt;
+            body.angularVelocity +=
+                body.GetInertiaWorldInv() * simulation.m_feedbackTorque * dt;
 
             metrics.MaxBodySpeed =
                 std::max(metrics.MaxBodySpeed, glm::length(body.velocity));

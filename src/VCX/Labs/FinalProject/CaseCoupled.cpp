@@ -152,57 +152,41 @@ namespace VCX::Labs::FluidSimulation {
         }
 
         if (! _stopped) {
-            _sim->m_boxPos = _body.position;
-            _sim->m_boxDim = _body.dim;
-            _sim->SimulateTimestep(_dt);
+            _body.position += _body.velocity * _dt;
+            if (glm::length(_body.angularVelocity) > 0.001f) {
+                glm::vec3 const axis = glm::normalize(_body.angularVelocity);
+                float const angle = glm::length(_body.angularVelocity) * _dt;
+                _body.orientation =
+                    glm::normalize(glm::angleAxis(angle, axis) * _body.orientation);
+            }
 
-            glm::vec3 gravityForce = glm::vec3(0.0f, -9.81f, 0.0f) * _body.mass;
-            glm::vec3 totalForce   = gravityForce + _sim->m_feedbackForce;
-
-            glm::vec3 acceleration = totalForce / std::max(_body.mass, 1e-6f);
-            _body.velocity += acceleration * _dt;
+            float const boundRadius = _body.BoundingRadius();
+            for (int direction = 0; direction < 3; ++direction) {
+                if (_body.position[direction] - boundRadius < -0.5f) {
+                    _body.position[direction] = -0.5f + boundRadius;
+                    _body.velocity[direction] *= -0.5f;
+                }
+                if (_body.position[direction] + boundRadius > 0.5f) {
+                    _body.position[direction] = 0.5f - boundRadius;
+                    _body.velocity[direction] *= -0.5f;
+                }
+            }
 
             if (_body.position.y < 0.1f) {
                 _body.velocity *= 0.96f;
                 _body.angularVelocity *= 0.95f;
             }
 
-            _body.position += _body.velocity * _dt;
+            _body.velocity += glm::vec3(0.0f, -9.81f, 0.0f) * _dt;
 
-            glm::vec3 angularAccel = _body.GetInertiaWorldInv() * _sim->m_feedbackTorque;
-            _body.angularVelocity += angularAccel * _dt;
-            if (glm::length(_body.angularVelocity) > 0.001f) {
-                glm::vec3 axis    = glm::normalize(_body.angularVelocity);
-                float     angle   = glm::length(_body.angularVelocity) * _dt;
-                _body.orientation = glm::normalize(glm::angleAxis(angle, axis) * _body.orientation);
-            }
+            _sim->m_boxPos = _body.position;
+            _sim->m_boxDim = _body.dim;
+            _sim->SimulateTimestep(_dt);
 
-            float boundRadius = _body.BoundingRadius();
-            float b           = 0.5f;
-            if (_body.position.x - boundRadius < -b) {
-                _body.position.x = -b + boundRadius;
-                _body.velocity.x *= -0.5f;
-            }
-            if (_body.position.x + boundRadius > b) {
-                _body.position.x = b - boundRadius;
-                _body.velocity.x *= -0.5f;
-            }
-            if (_body.position.y - boundRadius < -b) {
-                _body.position.y = -b + boundRadius;
-                _body.velocity.y *= -0.5f;
-            }
-            if (_body.position.y + boundRadius > b) {
-                _body.position.y = b - boundRadius;
-                _body.velocity.y *= -0.5f;
-            }
-            if (_body.position.z - boundRadius < -b) {
-                _body.position.z = -b + boundRadius;
-                _body.velocity.z *= -0.5f;
-            }
-            if (_body.position.z + boundRadius > b) {
-                _body.position.z = b - boundRadius;
-                _body.velocity.z *= -0.5f;
-            }
+            _body.velocity +=
+                _sim->m_feedbackForce / std::max(_body.mass, 1e-6f) * _dt;
+            _body.angularVelocity +=
+                _body.GetInertiaWorldInv() * _sim->m_feedbackTorque * _dt;
         }
 
         _frame.Resize(desiredSize);
