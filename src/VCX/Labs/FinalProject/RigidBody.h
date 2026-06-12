@@ -14,12 +14,15 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
 
+#include "Labs/FinalProject/MeshSDF.h"
+
 namespace VCX::Labs::Final {
     struct RigidBody {
         enum class ShapeType {
             Box    = 0,
             Sphere = 1,
-            Bunny  = 2
+            Bunny  = 2,
+            Mesh   = 3
         };
 
         ShapeType shape = ShapeType::Box;
@@ -34,6 +37,7 @@ namespace VCX::Labs::Final {
         glm::vec3 color           = { 0.8f, 0.2f, 0.2f };
         float     restitution     = 0.5f;
         bool      isStatic        = false;
+        std::shared_ptr<MeshSDF const> meshSDF;
 
         static float SdSphere(glm::vec3 const & p, float r) {
             return glm::length(p) - r;
@@ -114,6 +118,14 @@ namespace VCX::Labs::Final {
                 return;
             }
 
+            if (shape == ShapeType::Mesh && meshSDF && meshSDF->IsValid()) {
+                float const radius = 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
+                float const I      = 0.4f * mass * radius * radius;
+                float const invI   = I > 1e-6f ? 1.0f / I : 0.0f;
+                inertiaLocalInv    = glm::mat3(invI);
+                return;
+            }
+
             float x2        = dim.x * dim.x;
             float y2        = dim.y * dim.y;
             float z2        = dim.z * dim.z;
@@ -148,7 +160,24 @@ namespace VCX::Labs::Final {
                 return BunnyLikeSDF(pUnit);
             }
 
+            if (shape == ShapeType::Mesh && meshSDF && meshSDF->IsValid()) {
+                glm::vec3 const pUnit = localP / glm::max(dim, glm::vec3(1e-6f));
+                float const     scale = std::max(dim.x, std::max(dim.y, dim.z));
+                return meshSDF->SignedDistance(pUnit) * scale;
+            }
+
             return SdBox(localP, dim * 0.5f);
+        }
+
+        glm::vec3 GetSDFNormal(glm::vec3 const & worldP, float eps = 0.001f) const {
+            glm::vec3 const grad(
+                GetSDF(worldP + glm::vec3(eps, 0, 0)) - GetSDF(worldP - glm::vec3(eps, 0, 0)),
+                GetSDF(worldP + glm::vec3(0, eps, 0)) - GetSDF(worldP - glm::vec3(0, eps, 0)),
+                GetSDF(worldP + glm::vec3(0, 0, eps)) - GetSDF(worldP - glm::vec3(0, 0, eps)));
+            float const len2 = glm::dot(grad, grad);
+            if (len2 <= 1e-12f)
+                return glm::vec3(0.0f, 1.0f, 0.0f);
+            return grad / std::sqrt(len2);
         }
 
         void Reset(
@@ -170,6 +199,13 @@ namespace VCX::Labs::Final {
             ComputeInertia();
         }
 
+        void SetMeshSDF(std::shared_ptr<MeshSDF const> sdf) {
+            meshSDF = std::move(sdf);
+            if (meshSDF && meshSDF->IsValid())
+                shape = ShapeType::Mesh;
+            ComputeInertia();
+        }
+
         glm::vec3 GetVelocityAtPoint(glm::vec3 const & r) const {
             return velocity + glm::cross(angularVelocity, r);
         }
@@ -179,6 +215,8 @@ namespace VCX::Labs::Final {
                 return 0.5f * dim.x;
             if (shape == ShapeType::Bunny)
                 return 0.5f * std::max(dim.x, std::max(dim.y * 1.3f, dim.z));
+            if (shape == ShapeType::Mesh)
+                return 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
             return 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
         }
     };
