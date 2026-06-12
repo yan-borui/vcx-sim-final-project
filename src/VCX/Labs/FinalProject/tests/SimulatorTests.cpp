@@ -277,6 +277,9 @@ namespace {
                     isFinite),
                 "wall separation produced a non-finite particle position");
             require(std::isfinite(simulation.pressureResidual), "wall separation solve failed");
+            require(
+                simulation.wallSeparationKktResidual < 2e-4f,
+                "wall separation did not satisfy the KKT complementarity conditions");
 
             float maximumDivergence = 0.0f;
             for (int idx = 0; idx < simulation.m_iNumCells; ++idx) {
@@ -377,6 +380,33 @@ namespace {
             "sub-grid and voxelized channel flow are not meaningfully different");
     }
 
+    void testRigidCollisionPreservesTangentialVelocity() {
+        Simulator simulation;
+        simulation.setupScene(8);
+
+        RigidBody body;
+        body.Reset(
+            { 0.0f, 0.0f, 0.0f },
+            { 0.0f, 0.0f, 0.0f },
+            { 0.4f, 0.4f, 0.4f },
+            1.0f,
+            { 1.0f, 1.0f, 1.0f });
+        simulation.m_body = &body;
+
+        simulation.m_iNumSpheres = 1;
+        simulation.m_particlePos.assign(1, glm::vec3(0.19f, 0.0f, 0.0f));
+        simulation.m_particleVel.assign(1, glm::vec3(-1.0f, 0.75f, -0.5f));
+        simulation.handleParticleCollisions();
+
+        require(
+            simulation.m_particleVel[0].x >= -1e-5f,
+            "rigid collision did not remove inward normal velocity");
+        require(
+            std::abs(simulation.m_particleVel[0].y - 0.75f) < 1e-5f
+                && std::abs(simulation.m_particleVel[0].z + 0.5f) < 1e-5f,
+            "rigid collision incorrectly removed tangential velocity");
+    }
+
     void prepareSingleCoupledWallCell(
         VariationalCoupledSimulator & simulation,
         float                         wallVelocity) {
@@ -463,6 +493,38 @@ namespace {
         require(
             std::abs(fluidVelocity - separationBody.velocity.x) > 1e-3f,
             "body moving away from fluid incorrectly kept a sticking contact");
+    }
+
+    void testCoupledCutFaceWithoutSolidCellCenter() {
+        VariationalCoupledSimulator simulation;
+        simulation.setupScene(8);
+        simulation.enableWallSeparation = false;
+        simulation.volumeSamplesPerAxis  = 8;
+
+        RigidBody body;
+        body.Reset(
+            { 0.0f, -0.0625f, -0.0625f },
+            { -0.5f, 0.0f, 0.0f },
+            { 0.10f, 0.10f, 0.10f },
+            1.0f,
+            { 1.0f, 1.0f, 1.0f },
+            RigidBody::ShapeType::Sphere);
+        simulation.m_body = &body;
+
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+        simulation.m_type[offset(simulation, { 3, 3, 3 })] = Simulator::FLUID_CELL;
+
+        require(
+            body.GetSDF(glm::vec3(-0.0625f, -0.0625f, -0.0625f)) > 0.0f
+                && body.GetSDF(glm::vec3(0.0625f, -0.0625f, -0.0625f)) > 0.0f,
+            "cut-face regression setup accidentally covered a pressure-cell center");
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+        require(simulation.pressureSolveSucceeded, "cut-face coupled solve failed");
+        require(
+            simulation.m_feedbackForce.x > 1e-5f,
+            "sub-grid body overlap without a covered cell center produced no feedback");
     }
 
     void testCoupledProjectionUsesUpdatedBodyVelocity() {
@@ -552,9 +614,11 @@ int main(int argc, char ** argv) {
         testNegativeWallPressureSeparates();
         testGhostFluidUsesInterfaceDistance();
         testWallSeparationActiveSetConverges();
+        testRigidCollisionPreservesTangentialVelocity();
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
+        testCoupledCutFaceWithoutSolidCellCenter();
         testCoupledProjectionUsesUpdatedBodyVelocity();
         testTankPressureDoesNotPushRigidBody();
         if (! quick) {

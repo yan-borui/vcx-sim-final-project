@@ -25,7 +25,6 @@ namespace VCX::Labs::Final {
             FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
 
-        constexpr float WallSeparationGhostScale = 2.0f;
     }
 
     void VariationalCoupledSimulator::setupScene(int res) {
@@ -34,6 +33,7 @@ namespace VCX::Labs::Final {
         for (auto & fractions : _faceFluidFraction)
             fractions.assign(m_iNumCells, 0.0f);
         pressureResidual       = 0.0f;
+        wallSeparationKktResidual = 0.0f;
         pressureSolveSucceeded = true;
     }
 
@@ -73,15 +73,56 @@ namespace VCX::Labs::Final {
         return m_body && m_body->GetSDF(pressureCellCenter(cell)) < -1e-5f;
     }
 
+    bool VariationalCoupledSimulator::hasFluidSupportAcrossOpenFace(
+        glm::ivec3 const & cell) const {
+        if (! isSolidPressureCell(cell)
+            || ! isValidCell(cell)
+            || m_s[gridOffset(cell)] <= 0.0f)
+            return false;
+
+        for (FaceNeighbor const & side : FaceNeighbors) {
+            glm::ivec3 const face = cell + side.FaceOffset;
+            if (! isValidCell(face))
+                continue;
+            int const faceIdx = gridOffset(face);
+            if (faceWeight(side.Direction, faceIdx) <= 1e-6f)
+                continue;
+
+            glm::ivec3 const neighbor = cell + side.CellOffset;
+            if (! isValidCell(neighbor) || m_s[gridOffset(neighbor)] <= 0.0f)
+                continue;
+            if (m_type[gridOffset(neighbor)] == FLUID_CELL)
+                return true;
+        }
+        return false;
+    }
+
+    bool VariationalCoupledSimulator::isPressureUnknownCell(
+        glm::ivec3 const & cell) const {
+        if (! isValidCell(cell) || m_s[gridOffset(cell)] <= 0.0f)
+            return false;
+        return m_type[gridOffset(cell)] == FLUID_CELL
+            || hasFluidSupportAcrossOpenFace(cell);
+    }
+
     bool VariationalCoupledSimulator::isWallSeparationCandidate(glm::ivec3 const & cell) const {
         bool touchesSolid = false;
         bool touchesAir   = false;
 
         for (FaceNeighbor const & side : FaceNeighbors) {
+            glm::ivec3 const face    = cell + side.FaceOffset;
             glm::ivec3 const neighbor = cell + side.CellOffset;
-            if (isSolidPressureCell(neighbor)) {
+            int const        faceIdx = gridOffset(face);
+            bool const       tankOpen = isTankFaceOpen(face, side.Direction);
+            float const      boundaryWeight =
+                tankOpen ? 1.0f - faceWeight(side.Direction, faceIdx) : 1.0f;
+            if (boundaryWeight > 1e-6f) {
                 touchesSolid = true;
-            } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+            }
+            if (tankOpen
+                && isValidCell(neighbor)
+                && m_type[gridOffset(neighbor)] == EMPTY_CELL
+                && ! isSolidPressureCell(neighbor)) {
                 touchesAir = true;
             }
         }
@@ -145,6 +186,31 @@ namespace VCX::Labs::Final {
         return fraction > 0.5f ? 1.0f : 0.0f;
     }
 
+    float VariationalCoupledSimulator::wallGhostPressureScale(
+        glm::ivec3 const & cell,
+        glm::ivec3 const & face,
+        int                dir,
+        bool               bodyBoundary) const {
+        if (! bodyBoundary || ! m_body)
+            return 2.0f;
+
+        float const minimumDistance = 1e-4f * m_h;
+        glm::vec3 const cellCenter  = pressureCellCenter(cell);
+        glm::vec3 const wallSample  = faceCenter(face, dir);
+        float const     cellPhi     = std::max(m_body->GetSDF(cellCenter), minimumDistance);
+        float const     samplePhi   = m_body->GetSDF(wallSample);
+
+        float distance = cellPhi;
+        if (samplePhi < -minimumDistance) {
+            float const segmentFraction = std::clamp(
+                cellPhi / (cellPhi - samplePhi),
+                0.05f,
+                1.0f);
+            distance = segmentFraction * glm::length(wallSample - cellCenter);
+        }
+        return m_h / std::clamp(distance, 0.05f * m_h, m_h);
+    }
+
     float VariationalCoupledSimulator::solidVelocity(
         glm::ivec3 const & face,
         int                dir,
@@ -153,10 +219,6 @@ namespace VCX::Labs::Final {
             return 0.0f;
 
         glm::vec3 const center = faceCenter(face, dir);
-        if (m_body->GetSDF(pressureCellCenter(solidCell)) >= 0.0f
-            && m_body->GetSDF(center) >= 0.0f)
-            return 0.0f;
-
         return m_body->GetVelocityAtPoint(center - m_body->position)[dir];
     }
 
@@ -179,7 +241,7 @@ namespace VCX::Labs::Final {
                 (idx / m_iCellX) % m_iCellY,
                 idx / (m_iCellX * m_iCellY),
             };
-            if (m_type[idx] == FLUID_CELL && ! isSolidPressureCell(cell)) {
+            if (isPressureUnknownCell(cell)) {
                 cellToRow[idx] = int(rowToCell.size());
                 rowToCell.push_back(idx);
             }
@@ -205,37 +267,35 @@ namespace VCX::Labs::Final {
             int   FaceIndex;
             int   Direction;
             float DivergenceSign;
+            float OpenWeight;
             float BoundaryWeight;
+            float GhostScale;
             float WallVelocity;
             bool  BodyBoundary;
             bool  Candidate;
             bool  Contact;
-            bool  ReleaseBlocked;
         };
 
         std::vector<WallFace> wallFaces;
         std::vector<int>      wallFaceForSide(rowToCell.size() * FaceNeighbors.size(), -1);
         for (int row = 0; row < int(rowToCell.size()); ++row) {
             glm::ivec3 const cell = decodeCell(rowToCell[row]);
-            bool const       candidateCell =
-                enableWallSeparation && isWallSeparationCandidate(cell);
+            bool const candidateCell =
+                enableWallSeparation
+                && m_type[rowToCell[row]] == FLUID_CELL
+                && isWallSeparationCandidate(cell);
             for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
                 FaceNeighbor const & side     = FaceNeighbors[sideIndex];
                 glm::ivec3 const     neighbor = cell + side.CellOffset;
-                if (! isSolidPressureCell(neighbor))
-                    continue;
-
                 glm::ivec3 const face    = cell + side.FaceOffset;
                 int const        faceIdx = gridOffset(face);
-                float const      boundaryWeight =
-                    1.0f - faceWeight(side.Direction, faceIdx);
+                bool const       tankOpen = isTankFaceOpen(face, side.Direction);
+                float const      openWeight =
+                    tankOpen ? faceWeight(side.Direction, faceIdx) : 0.0f;
+                float const      boundaryWeight = 1.0f - openWeight;
                 if (boundaryWeight <= 1e-6f)
                     continue;
-                bool const bodyBoundary =
-                    m_body
-                    && isValidCell(neighbor)
-                    && m_s[gridOffset(neighbor)] > 0.0f
-                    && m_body->GetSDF(pressureCellCenter(neighbor)) < -1e-5f;
+                bool const bodyBoundary = tankOpen && m_body;
 
                 wallFaceForSide[row * FaceNeighbors.size() + sideIndex] =
                     int(wallFaces.size());
@@ -244,12 +304,17 @@ namespace VCX::Labs::Final {
                     .FaceIndex      = faceIdx,
                     .Direction      = side.Direction,
                     .DivergenceSign = side.DivergenceSign,
+                    .OpenWeight     = openWeight,
                     .BoundaryWeight = boundaryWeight,
+                    .GhostScale     = wallGhostPressureScale(
+                        cell,
+                        face,
+                        side.Direction,
+                        bodyBoundary),
                     .WallVelocity   = solidVelocity(face, side.Direction, neighbor),
                     .BodyBoundary   = bodyBoundary,
                     .Candidate      = candidateCell,
                     .Contact        = true,
-                    .ReleaseBlocked = false,
                 });
             }
         }
@@ -268,7 +333,14 @@ namespace VCX::Labs::Final {
         }
 
         Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
-        Eigen::VectorXd              appliedPressure      = Eigen::VectorXd::Zero(int(rowToCell.size()));
+        auto const contactPressure = [&](WallFace const & wallFace) {
+            float const velocityDelta =
+                wallFace.WallVelocity
+                - intermediateVelocity[wallFace.FaceIndex][wallFace.Direction];
+            return float(pressure[wallFace.Row])
+                - velocityDelta
+                    / (wallFace.DivergenceSign * wallFace.GhostScale);
+        };
         auto                         solveWithContacts    = [&]() {
             struct RigidPressureJacobian {
                 glm::vec3 Linear { 0.0f };
@@ -307,13 +379,13 @@ namespace VCX::Labs::Final {
                             WallFace const & wallFace = wallFaces[wallFaceIndex];
                             if (wallFace.Candidate && ! wallFace.Contact)
                                 hasDirichletBoundary = true;
-                            continue;
                         }
-                        if (isSolidPressureCell(neighbor))
-                            continue;
 
-                        float const openWeight = faceWeight(side.Direction, faceIdx);
-                        if (openWeight <= 1e-6f)
+                        float const openWeight =
+                            faceWeight(side.Direction, faceIdx);
+                        if (openWeight <= 1e-6f
+                            || ! isValidCell(neighbor)
+                            || m_s[gridOffset(neighbor)] <= 0.0f)
                             continue;
 
                         int const neighborRow = cellToRow[gridOffset(neighbor)];
@@ -398,15 +470,14 @@ namespace VCX::Labs::Final {
                             * double(wallFace.BoundaryWeight) * double(velocity);
                         if (wallFace.Candidate && ! wallFace.Contact)
                             diagonal +=
-                                wallFace.BoundaryWeight * WallSeparationGhostScale;
-                        continue;
+                                wallFace.BoundaryWeight * wallFace.GhostScale;
                     }
 
-                    if (isSolidPressureCell(neighbor))
-                        continue;
-
-                    float const openWeight = faceWeight(side.Direction, faceIdx);
-                    if (openWeight <= 1e-6f)
+                    float const openWeight =
+                        faceWeight(side.Direction, faceIdx);
+                    if (openWeight <= 1e-6f
+                        || ! isValidCell(neighbor)
+                        || m_s[gridOffset(neighbor)] <= 0.0f)
                         continue;
 
                     weightedDivergence += side.DivergenceSign
@@ -487,13 +558,6 @@ namespace VCX::Labs::Final {
                 pressureResidual = std::numeric_limits<float>::infinity();
             }
 
-            appliedPressure = pressure;
-            for (WallFace const & wallFace : wallFaces) {
-                if (wallFace.Candidate && wallFace.Contact)
-                    appliedPressure[wallFace.Row] =
-                        std::max(appliedPressure[wallFace.Row], 0.0);
-            }
-
             glm::vec3 bodyLinearVelocityDelta(0.0f);
             glm::vec3 bodyAngularVelocityDelta(0.0f);
             if (dynamicBody) {
@@ -501,7 +565,7 @@ namespace VCX::Labs::Final {
                 glm::vec3 angularImpulse(0.0f);
                 float const cellVolume = m_h * m_h * m_h;
                 for (int const row : rigidRows) {
-                    float const pressureValue = float(appliedPressure[row]);
+                    float const pressureValue = float(pressure[row]);
                     linearImpulse +=
                         cellVolume * rigidJacobian[row].Linear * pressureValue;
                     angularImpulse +=
@@ -514,7 +578,8 @@ namespace VCX::Labs::Final {
 
             m_vel = intermediateVelocity;
             for (WallFace const & wallFace : wallFaces) {
-                if (wallFace.Candidate && ! wallFace.Contact)
+                if ((wallFace.Candidate && ! wallFace.Contact)
+                    || wallFace.OpenWeight > 1e-6f)
                     continue;
 
                 float finalWallVelocity = wallFace.WallVelocity;
@@ -537,7 +602,7 @@ namespace VCX::Labs::Final {
 
             for (int row = 0; row < matrixSize; ++row) {
                 glm::ivec3 const cell          = decodeCell(rowToCell[row]);
-                float const      pressureValue = float(appliedPressure[row]);
+                float const      pressureValue = float(pressure[row]);
                 for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
                     FaceNeighbor const & side     = FaceNeighbors[sideIndex];
                     glm::ivec3 const     face     = cell + side.FaceOffset;
@@ -548,14 +613,25 @@ namespace VCX::Labs::Final {
                         wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
                     if (wallFaceIndex >= 0) {
                         WallFace const & wallFace = wallFaces[wallFaceIndex];
-                        if (! wallFace.Candidate || wallFace.Contact)
+                        if (wallFace.Candidate
+                            && ! wallFace.Contact
+                            && wallFace.OpenWeight <= 1e-6f) {
+                            pressureScale = wallFace.GhostScale;
+                            m_vel[faceIdx][side.Direction] +=
+                                side.DivergenceSign * pressureScale * pressureValue;
                             continue;
-                        pressureScale = WallSeparationGhostScale;
-                    } else if (
-                        isSolidPressureCell(neighbor)
-                        || faceWeight(side.Direction, faceIdx) <= 1e-6f) {
+                        }
+                    }
+
+                    float const openWeight =
+                        faceWeight(side.Direction, faceIdx);
+                    if (openWeight <= 1e-6f
+                        || ! isValidCell(neighbor)
+                        || m_s[gridOffset(neighbor)] <= 0.0f) {
                         continue;
-                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                    }
+                    if (cellToRow[gridOffset(neighbor)] < 0
+                        && m_type[gridOffset(neighbor)] == EMPTY_CELL) {
                         pressureScale = ghostFluidPressureScale(
                             liquidLevelSet,
                             rowToCell[row],
@@ -578,18 +654,19 @@ namespace VCX::Labs::Final {
             if (! enableWallSeparation)
                 break;
 
-            bool removedNegativePressureContact = false;
+            bool releasedSuctionContact = false;
             for (WallFace & wallFace : wallFaces) {
                 if (! wallFace.Candidate || ! wallFace.Contact)
                     continue;
 
-                if (! wallFace.ReleaseBlocked && pressure[wallFace.Row] < -1e-5) {
-                    wallFace.Contact = false;
-                    removedNegativePressureContact = true;
-                    changedActiveSet = true;
+                float const boundaryPressure = contactPressure(wallFace);
+                if (boundaryPressure < -1e-5f) {
+                    wallFace.Contact       = false;
+                    releasedSuctionContact = true;
+                    changedActiveSet       = true;
                 }
             }
-            if (removedNegativePressureContact)
+            if (releasedSuctionContact)
                 continue;
 
             for (WallFace & wallFace : wallFaces) {
@@ -602,7 +679,6 @@ namespace VCX::Labs::Final {
                        - wallFace.WallVelocity);
                 if (separationSpeed < -1e-5f) {
                     wallFace.Contact = true;
-                    wallFace.ReleaseBlocked = true;
                     changedActiveSet = true;
                 }
             }
@@ -613,20 +689,32 @@ namespace VCX::Labs::Final {
             solveWithContacts();
 
         for (int row = 0; row < int(rowToCell.size()); ++row)
-            m_p[rowToCell[row]] = float(appliedPressure[row]);
+            m_p[rowToCell[row]] = float(pressure[row]);
 
+        wallSeparationKktResidual = 0.0f;
         std::vector<BoundaryPressureSample> boundarySamples;
         boundarySamples.reserve(wallFaces.size());
         for (WallFace const & wallFace : wallFaces) {
+            if (wallFace.Candidate) {
+                float const separationSpeed =
+                    -wallFace.DivergenceSign
+                    * (m_vel[wallFace.FaceIndex][wallFace.Direction]
+                       - wallFace.WallVelocity);
+                float const violation = wallFace.Contact
+                    ? std::max(-contactPressure(wallFace), 0.0f)
+                    : std::max(-separationSpeed, 0.0f);
+                wallSeparationKktResidual =
+                    std::max(wallSeparationKktResidual, violation);
+            }
             if (! wallFace.BodyBoundary)
                 continue;
             boundarySamples.push_back(BoundaryPressureSample {
-                .PressureCell    = rowToCell[wallFace.Row],
-                .FaceIndex       = wallFace.FaceIndex,
-                .Direction       = wallFace.Direction,
-                .DivergenceSign  = wallFace.DivergenceSign,
-                .BoundaryWeight  = wallFace.BoundaryWeight,
-                .Contact         = ! wallFace.Candidate || wallFace.Contact,
+                .FaceIndex        = wallFace.FaceIndex,
+                .Direction        = wallFace.Direction,
+                .DivergenceSign   = wallFace.DivergenceSign,
+                .BoundaryWeight   = wallFace.BoundaryWeight,
+                .BoundaryPressure = contactPressure(wallFace),
+                .Contact          = ! wallFace.Candidate || wallFace.Contact,
             });
         }
 
@@ -644,7 +732,7 @@ namespace VCX::Labs::Final {
             if (! sample.Contact || sample.BoundaryWeight <= 1e-6f)
                 continue;
 
-            float const pressure = m_p[sample.PressureCell];
+            float const pressure = sample.BoundaryPressure;
             if (pressure <= 0.0f)
                 continue;
 

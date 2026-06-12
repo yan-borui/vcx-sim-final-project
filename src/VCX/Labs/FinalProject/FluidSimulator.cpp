@@ -73,7 +73,6 @@ namespace VCX::Labs::Final {
     }
 
     void Simulator::handleParticleCollisions() {
-        float buffer = 0.01f * m_h;
         float minBound = -0.5f + m_h;
         float maxBound =  0.5f - m_h;
         for (int i = 0; i < m_iNumSpheres; ++i) {
@@ -99,7 +98,12 @@ namespace VCX::Labs::Final {
                         m_body->GetSDF(m_particlePos[i] + glm::vec3(0,0,eps)) - m_body->GetSDF(m_particlePos[i] - glm::vec3(0,0,eps))
                     ));
                     m_particlePos[i] -= dist * n; // 推回表面
-                    m_particleVel[i] = m_body->GetVelocityAtPoint(m_particlePos[i] - m_body->position); // 摩擦力效果
+                    glm::vec3 const bodyVelocity =
+                        m_body->GetVelocityAtPoint(m_particlePos[i] - m_body->position);
+                    float const inwardSpeed =
+                        glm::dot(m_particleVel[i] - bodyVelocity, n);
+                    if (inwardSpeed < 0.0f)
+                        m_particleVel[i] -= inwardSpeed * n;
                 }
             }
         }
