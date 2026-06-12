@@ -1,7 +1,6 @@
 #include <spdlog/spdlog.h>
 #include "Engine/app.h"
 #include "Labs/FinalProject/CaseVariation.h"
-#include "Labs/FinalProject/RenderBindings.h"
 #include "Labs/Common/ImGuiHelper.h"
 #include <iostream>
 
@@ -36,17 +35,13 @@ namespace VCX::Labs::FluidSimulation {
             Engine::GL::VertexLayout().Add<glm::vec3>("position", 
                 Engine::GL::DrawFrequency::Stream , 0), 
                 Engine::GL::PrimitiveType::Triangles),
-        _sceneObject(VariationPassConstantsBinding),
+        _sceneObject(1),
         _BoundaryItem(Engine::GL::VertexLayout()
             .Add<glm::vec3>("position", Engine::GL::DrawFrequency::Stream , 0), Engine::GL::PrimitiveType::Lines){ 
         _cameraManager.AutoRotate = false;
 
-        _program.BindUniformBlock(
-            "PassConstants",
-            VariationPassConstantsBinding);
-        _lineprogram.BindUniformBlock(
-            "PassConstants",
-            VariationPassConstantsBinding);
+        _program.BindUniformBlock("PassConstants", 1);
+        _lineprogram.BindUniformBlock("PassConstants", 1);
 
         _program.GetUniforms().SetByName("u_DiffuseMap" , 0);
         _program.GetUniforms().SetByName("u_SpecularMap", 1);
@@ -146,6 +141,8 @@ namespace VCX::Labs::FluidSimulation {
         // Rendering::ModelObject m = Rendering::ModelObject(_sphere,_simulation.Positions);
         Rendering::ModelObject m = Rendering::ModelObject(_sphere, _sim->m_particlePos, _sim->m_particleColor);
         auto const & material    = _sceneObject.Materials[0];
+        _program.GetUniforms().SetByName("u_FluidProjection", proj);
+        _program.GetUniforms().SetByName("u_FluidView", view);
         m.Mesh.Draw({ material.Albedo.Use(),  material.MetaSpec.Use(), material.Height.Use(),_program.Use() },
             _sphere.Mesh.Indices.size(), 0, _sim->m_iNumSpheres);
         
@@ -156,10 +153,9 @@ namespace VCX::Labs::FluidSimulation {
                               glm::mat4_cast(_body.orientation) * 
                               glm::scale(glm::mat4(1.0f), _body.dim);
 
-        glm::mat4 View = view * bodyModel;
-
         _flatProgram.GetUniforms().SetByName("u_Projection", proj);
-        _flatProgram.GetUniforms().SetByName("u_View", View);
+        _flatProgram.GetUniforms().SetByName("u_View", view);
+        _flatProgram.GetUniforms().SetByName("u_Model", bodyModel);
         _flatProgram.GetUniforms().SetByName("u_Color", _body.color);
         _RigidBodyItem.Draw({ _flatProgram.Use() });
 
@@ -216,7 +212,7 @@ namespace VCX::Labs::FluidSimulation {
         _sim->setupScene(_res);
         std::fill(_sim->m_vel.begin(), _sim->m_vel.end(), glm::vec3(0.0f));
     std::fill(_sim->m_pre_vel.begin(), _sim->m_pre_vel.end(), glm::vec3(0.0f));
-        _body.Reset({0, 0.3f, 0}, {0,0,0}, {0.3f, 0.3f, 0.3f}, 1.0f, {0.8f, 0.2f, 0.2f});
+        _body.Reset({0, 0.3f, 0}, {0,0,0}, {0.3f, 0.3f, 0.3f}, 0.1f, {0.8f, 0.2f, 0.2f});
         _sim->m_body = &_body;
         numofSpheres = _sim->m_iNumSpheres;
         _r = _sim->m_particleRadius; //cell size

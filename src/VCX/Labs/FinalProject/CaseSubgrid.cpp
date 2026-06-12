@@ -1,10 +1,11 @@
 #include "Labs/FinalProject/CaseSubgrid.h"
 
 #include "Engine/app.h"
-#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     namespace {
+        constexpr std::uint32_t SubgridPassConstantsBinding = 2;
+
         const std::vector<glm::vec3> BoundaryVertices = {
             { -0.5f, -0.5f, -0.5f },
             {  0.5f, -0.5f, -0.5f },

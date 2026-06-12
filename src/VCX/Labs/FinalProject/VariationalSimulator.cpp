@@ -1,6 +1,7 @@
 #include "Labs/FinalProject/VariationalSimulator.h"
 
 namespace VCX::Labs::Final {
+
     void VariationalSimulator::integrateParticles(float timeStep) {
         for (int i = 0; i < m_iNumSpheres; ++i) {
             m_particleVel[i] += gravity * timeStep;
@@ -11,25 +12,15 @@ namespace VCX::Labs::Final {
 
     // 计算网格面上的流体权重 (0.0 表示全固体, 1.0 表示全流体)
     float VariationalSimulator::getFaceWeight(int i, int j, int k, int dir) {
-        float sumW = 0.0f;
-        // 在 0.25 和 0.75 位置采样
-        float offsets[2] = { 0.25f * m_h, 0.75f * m_h };
+        // 采样面中心的坐标
+        glm::vec3 facePos = glm::vec3(i, j, k) * m_h - glm::vec3(0.5f);
+        if (dir == 0) facePos += glm::vec3(0.0f, 0.5f, 0.5f) * m_h;         // X-face
+        else if (dir == 1) facePos += glm::vec3(0.5f, 0.0f, 0.5f) * m_h;    // Y-face
+        else facePos += glm::vec3(0.5f, 0.5f, 0.0f) * m_h;                  // Z-face
 
-        glm::vec3 basePos = glm::vec3(i, j, k) * m_h - glm::vec3(0.5f);
+        float dist = m_body->GetSDF(facePos);
     
-        for (int a = 0; a < 2; ++a) {
-            for (int b = 0; b < 2; ++b) {
-                glm::vec3 samplePos = basePos;
-                if (dir == 0)      samplePos += glm::vec3(0.0f, offsets[a], offsets[b]); // X-face
-                else if (dir == 1) samplePos += glm::vec3(offsets[a], 0.0f, offsets[b]); // Y-face
-                else               samplePos += glm::vec3(offsets[a], offsets[b], 0.0f); // Z-face
-
-                float dist = m_body->GetSDF(samplePos);
-                // 线性平滑
-                sumW += std::clamp(0.5f + dist / m_h, 0.0f, 1.0f);
-            }
-        }
-        return sumW * 0.25f; // 取 4 个点的平均值
+        return std::clamp(0.5f + dist / m_h, 0.0f, 1.0f);
     }
 
     void VariationalSimulator::handleParticleCollisions() {
@@ -68,7 +59,8 @@ namespace VCX::Labs::Final {
         
                     if (v_normal < 0) {
                         // 只消除法向相对速度，不影响切向
-                        m_particleVel[i] -= 1.0f * v_normal * n;
+                        m_particleVel[i] -= v_normal * n;
+                        m_particleVel[i] -= 1.2f * v_normal * n; 
                     }
                 }
             }
@@ -278,57 +270,9 @@ namespace VCX::Labs::Final {
         std::vector<Eigen::Triplet<float>> triplets;
 
         float invH = 1.0f / m_h;
-        float scale = 1.0f / (m_h * m_h);
+        float scale = 1.0f / (m_h * m_h); 
 
-        // --- 1: 预计算刚体逆质量矩阵 ---
-        Eigen::Matrix<float, 6, 6> invMs;
-        invMs.setZero();
-        if (m_body && !m_body->isStatic) {
-            invMs.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * (1.0f / m_body->mass);
-            glm::mat3 invI = m_body->GetInertiaWorldInv();
-            for(int r = 0; r < 3; ++r) 
-                for(int c = 0; c < 3; ++c) 
-                    invMs(3+r, 3+c) = invI[c][r];
-        }
-
-        // --- 2: 收集 Jacobian 向量 ---
-        std::vector<Eigen::Matrix<float, 6, 1>> J(n, Eigen::Matrix<float, 6, 1>::Zero());
-        std::vector<int> boundaryCells;
-
-        for (int i = 1; i < m_iCellX - 1; i++) {
-            for (int j = 1; j < m_iCellY - 1; j++) {
-                for (int k = 1; k < m_iCellZ - 1; k++) {
-                    int idx = index2GridOffset({i, j, k});
-                    if (m_type[idx] != FLUID_CELL) continue;
-
-                    // 检查 6 个面
-                    int fIdx[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j+1,k}};
-                    int dirs[6] = {0, 0, 1, 1, 2, 2};
-                    float signs[6] = {-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f};
-
-                    for (int m = 0; m < 6; m++) {
-                        float w = getFaceWeight(fIdx[m][0], fIdx[m][1], fIdx[m][2], dirs[m]);
-                        // w < 1 表示这个面有固体覆盖
-                        if (w < 1.0f && m_body) {
-                            float area = (1.0f - w) * m_h * m_h;
-                            glm::vec3 n_vec(0); n_vec[dirs[m]] = signs[m];
-                            glm::vec3 facePos = glm::vec3(fIdx[m][0], fIdx[m][1], fIdx[m][2]) * m_h - 0.5f;
-                            glm::vec3 arm = facePos - m_body->position;
-                            glm::vec3 torque = glm::cross(arm, n_vec);
-
-                            // Ji 代表压力对刚体产生的广义力
-                            J[idx](dirs[m]) += n_vec[dirs[m]] * area;
-                            J[idx](3) += torque.x * area;
-                            J[idx](4) += torque.y * area;
-                            J[idx](5) += torque.z * area;
-                        }
-                    }
-                    if (J[idx].norm() > 1e-9f) boundaryCells.push_back(idx);
-                }
-            }
-        }
-
-        // --- 3: 构建标准流体拉普拉斯矩阵 ---
+        // --- 1. 构建全局稀疏矩阵与 RHS (b) ---
         for (int i = 1; i < m_iCellX - 1; i++) {
             for (int j = 1; j < m_iCellY - 1; j++) {
                 for (int k = 1; k < m_iCellZ - 1; k++) {
@@ -336,134 +280,130 @@ namespace VCX::Labs::Final {
                     if (m_type[idx] != FLUID_CELL) continue;
 
                     float centerDiag = 0.0f;
-                    float divergence = 0.0f;
-                    float eps_diag = 1e-4f;
+                    float divergence = 0.0f; 
+                
                     int neighbors[6][3] = {{i-1,j,k}, {i+1,j,k}, {i,j-1,k}, {i,j+1,k}, {i,j,k-1}, {i,j,k+1}};
                     int dirs[6] = {0, 0, 1, 1, 2, 2};
-                    int fIdx[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j+1,k}};
+                    int faceIdx[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j+1,k}};
 
                     for (int m = 0; m < 6; m++) {
-                        float w_raw = getFaceWeight(fIdx[m][0], fIdx[m][1], fIdx[m][2], dirs[m]);
-                        float w = (w_raw < 0.05f) ? 0.0f : ((w_raw > 0.95f) ? 1.0f : w_raw);
-                        if (w <= 0.0f) continue; 
+                        float w = getFaceWeight(faceIdx[m][0], faceIdx[m][1], faceIdx[m][2], dirs[m]);
+
+                        if (w < 0.05f) w = 0.0f; 
+                        else if (w > 0.99f) w = 1.0f;
 
                         int nIdx = index2GridOffset({neighbors[m][0], neighbors[m][1], neighbors[m][2]});
+                        int fGrid = index2GridOffset({faceIdx[m][0], faceIdx[m][1], faceIdx[m][2]});
                         float sgn = (m % 2 == 0) ? 1.0f : -1.0f;
 
-                        // RHS: 散度计算
-                        float u_star = m_vel[index2GridOffset({fIdx[m][0], fIdx[m][1], fIdx[m][2]})][dirs[m]];
-                        float v_solid_star = 0.0f;
-                        if (m_body) {
-                            glm::vec3 facePos = glm::vec3(fIdx[m][0], fIdx[m][1], fIdx[m][2]) * m_h - 0.5f;
-                            v_solid_star = m_body->GetVelocityAtPoint(facePos - m_body->position)[dirs[m]];
+                        // 计算面上的流量贡献
+                        float u_star = m_vel[fGrid][dirs[m]];
+                        float v_s = 0.0f;
+                    
+                        if (m_type[nIdx] == SOLID_CELL) {
+                            // 如果邻居是固体，获取固体的边界速度
+                            glm::vec3 fPos = (glm::vec3(faceIdx[m][0], faceIdx[m][1], faceIdx[m][2])) * m_h - 0.5f;
+                            if (m_body && m_body->GetSDF(fPos) < m_h) {
+                                v_s = m_body->GetVelocityAtPoint(fPos - m_body->position)[dirs[m]];
+                            }
                         }
-                        divergence += sgn * (w * u_star + (1.0f - w) * v_solid_star) * invH;
 
-                        // Matrix: 流体部分
+                        // 散度计算：w*u + (1-w)*v_s
+                        divergence += sgn * (w * u_star + (1.0f - w) * v_s) * invH;
+
                         if (m_type[nIdx] == FLUID_CELL) {
                             triplets.push_back(Eigen::Triplet<float>(idx, nIdx, -w * scale));
                             centerDiag += w * scale;
                         } else if (m_type[nIdx] == EMPTY_CELL) {
-                            centerDiag += w * scale; // 自由表面边界
+                            centerDiag += w * scale;
                         }
                     }
+
                     b(idx) = divergence / dt;
-                    triplets.push_back(Eigen::Triplet<float>(idx, idx, centerDiag + eps_diag));
-                }
-            }
-        }
 
-        // --- 4: 耦合项 J * Minv * J^T ---
-        if (m_body && !m_body->isStatic) {   
-            std::vector<Eigen::Matrix<float, 6, 1>> MinvJ(n);
-            for (int idx : boundaryCells) {
-                MinvJ[idx] = invMs * J[idx];
-            }
-
-            // 填充耦合项
-            for (size_t a = 0; a < boundaryCells.size(); ++a) {
-                int idx_a = boundaryCells[a];
-                for (size_t b = a; b < boundaryCells.size(); ++b) {
-                    int idx_b = boundaryCells[b];
-                
-                    // 计算耦合值: Ji^T * (M^-1 * Jj)
-                    float val = J[idx_a].dot(MinvJ[idx_b]);
-                
-                    if (std::abs(val) > 1e-12f) {
-                        triplets.push_back(Eigen::Triplet<float>(idx_a, idx_b, val));
-                        if (idx_a != idx_b) {
-                            triplets.push_back(Eigen::Triplet<float>(idx_b, idx_a, val)); // 保持矩阵对称
+                    if (compensateDrift && m_particleRestDensity > 0.001f) {
+                        float targetDensity = m_particleRestDensity * 0.8f; 
+                        float dErr = m_particleDensity[idx] - targetDensity;
+    
+                        if (dErr > 0) {
+                            b(idx) += 0.1f * (dErr / dt); 
                         }
                     }
+                    triplets.push_back(Eigen::Triplet<float>(idx, idx, centerDiag));
                 }
             }
         }
 
-        // --- 5: 求解器设置 ---
+        // --- 2. 求解 ---
+        for (int i = 0; i < b.size(); ++i) {
+            if (std::isnan(b(i))) b(i) = 0.0f;
+            b(i) = std::clamp(b(i), -20.0f, 20.0f); 
+        }
+    
+
         A.setFromTriplets(triplets.begin(), triplets.end());
         Eigen::ConjugateGradient<Eigen::SparseMatrix<float>, Eigen::Lower|Eigen::Upper> solver;
-        solver.setMaxIterations(200); 
-        solver.setTolerance(1e-4);
+        solver.setMaxIterations(150); 
+        solver.setTolerance(0.01f); 
+
         solver.compute(A);
         Eigen::VectorXf p_sol = solver.solve(b);
 
-        // 处理 NaN 和 Inf，确保压力值在合理范围内
-        for (int i = 0; i < m_iNumCells; i++) {
-            float p = (i < p_sol.size()) ? p_sol[i] : 0.0f;
-            if (!std::isfinite(p)) p = 0.0f; 
-            m_p[i] = std::clamp(p, 0.0f, 50.0f);
+        // 限制压力为非负，壁面分离逻辑
+        for (int i = 0; i < p_sol.size(); i++) {
+        if (p_sol[i] < 0.0f || std::isnan(p_sol[i])) p_sol[i] = 0.0f;
+    
+        // 限制压强上限
+        if (p_sol[i] > 50.0f) p_sol[i] = 50.0f; 
+            m_p[i] = p_sol[i];
         }
 
-        // 更新流体网格速度
+        // --- 3. 同步更新速度与反馈冲量 ---
+        m_feedbackForce = glm::vec3(0.0f);
+        m_feedbackTorque = glm::vec3(0.0f);
+
         for (int i = 1; i < m_iCellX - 1; i++) {
             for (int j = 1; j < m_iCellY - 1; j++) {
                 for (int k = 1; k < m_iCellZ - 1; k++) {
                     int idx = index2GridOffset({i, j, k});
-                    int neighbors[3][3] = {{i-1,j,k}, {i,j-1,k}, {i,j,k-1}};
-                    for (int dir = 0; dir < 3; dir++) {
-                        float w = getFaceWeight(i, j, k, dir);
-                        if (w > 0.01f) { 
-                            int pIdx = index2GridOffset({neighbors[dir][0], neighbors[dir][1], neighbors[dir][2]});
-                            
-                            // --- 限制速度增量 ---
-                            float deltaV = dt * (m_p[idx] - m_p[pIdx]) * invH;
-                            float maxV = 0.5f * m_h / dt;
-                            deltaV = std::clamp(deltaV, -maxV, maxV);
-                            
-                            m_vel[idx][dir] -= deltaV;
+
+                    float p_val = m_p[idx];
+                    if (p_val <= 0.0f) continue;
+
+                    int neighbors[6][3] = {{i-1,j,k}, {i+1,j,k}, {i,j-1,k}, {i,j+1,k}, {i,j,k-1}, {i,j,k+1}};
+                    int dirs[6] = {0, 0, 1, 1, 2, 2};
+                    // 面坐标对齐：负向面(0,2,4)就是(i,j,k)，正向面(1,3,5)是(i+1,j+1,k+1)
+                    int faces[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j,k+1}};
+                    float signs[6] = {-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f}; // 面的法线方向
+
+                    for (int m = 0; m < 6; m++) {
+                        float w = getFaceWeight(faces[m][0], faces[m][1], faces[m][2], dirs[m]);
+                
+                        // 如果面上有固体成分 (w < 1.0)
+                        if (w < 0.999f && m_body) {
+                            // 压强产生的力：F = P * Area * (1-w)
+                            // 冲量 J = F * dt
+                            float solidAreaFrac = (1.0f - w);
+                            float impulseMag = p_val * solidAreaFrac * (m_h * m_h) * dt;
+                    
+                            glm::vec3 n(0); n[dirs[m]] = signs[m];
+                            glm::vec3 jVec = n * impulseMag;
+                    
+                            // 采样点：面的中心
+                            glm::vec3 facePos = glm::vec3(faces[m][0], faces[m][1], faces[m][2]) * m_h - 0.5f;
+                            glm::vec3 offset(0.5f * m_h); offset[dirs[m]] = 0.0f;
+                            glm::vec3 actualPos = facePos + offset;
+
+                            m_feedbackForce  += jVec;
+                            m_feedbackTorque += glm::cross(actualPos - m_body->position, jVec);
                         }
                     }
                 }
             }
         }
-
-        // 更新刚体速度: V = V* + dt * M^-1 * sum(Ji * pi)
-        if (m_body && !m_body->isStatic) {
-            Eigen::Matrix<float, 6, 1> totalImpulse = Eigen::Matrix<float, 6, 1>::Zero();
-            for (int idx : boundaryCells) {
-                totalImpulse += J[idx] * m_p[idx];
-            }
-        
-            Eigen::Matrix<float, 6, 1> deltaV_6 = invMs * totalImpulse;
-        
-            // --- 线速度更新 ---
-            glm::vec3 dv = glm::vec3(deltaV_6(0), deltaV_6(1), deltaV_6(2));
-            float maxDV = 5.0f * m_h / dt;
-            if (glm::length(dv) > maxDV) dv = glm::normalize(dv) * maxDV;
-            m_body->velocity += dv;
-                m_body->velocity *= 0.995f;
-
-            // --- 角速度更新 ---
-            glm::vec3 dw = glm::vec3(deltaV_6(3), deltaV_6(4), deltaV_6(5));
-            float maxDW = 2.0f; // 限制单步旋转弧度
-            if (glm::length(dw) > maxDW) dw = glm::normalize(dw) * maxDW;
-            m_body->angularVelocity = (m_body->angularVelocity + dw) * 0.95f; 
-        
-            if (!std::isfinite(m_body->velocity.x)) m_body->velocity = glm::vec3(0);
-            if (!std::isfinite(m_body->angularVelocity.x)) m_body->angularVelocity = glm::vec3(0);
-        }
     }
-
+    
+    
     void VariationalSimulator::updateParticleColors() {
         const glm::vec3 defaultColor(0.2f, 0.6f, 0.9f);
         const glm::vec3 purple(0.7f, 0.1f, 0.9f);

@@ -1,4 +1,4 @@
-#include "APICSimulator.h"
+﻿#include "APICSimulator.h"
 
 namespace VCX::Labs::Final {
     void APICSimulator::transferVelocities(bool toGrid, float flipRatio) {

@@ -1,10 +1,11 @@
 #include "Labs/FinalProject/CaseFreeSurfaceSeparation.h"
 
 #include "Engine/app.h"
-#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     namespace {
+        constexpr std::uint32_t SeparationPassConstantsBinding = 3;
+
         const std::vector<glm::vec3> BoundaryVertices = {
             { -0.5f, -0.5f, -0.5f },
             {  0.5f, -0.5f, -0.5f },
@@ -72,7 +73,6 @@ namespace VCX::Labs::FluidSimulation {
             "Active-set iterations: %d",
             _simulation.wallSeparationActiveSetIterations);
         ImGui::Text("Min contact pressure: %.5f", _simulation.minimumContactPressure);
-        ImGui::Text("KKT residual: %.3e", _simulation.wallSeparationKktResidual);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
         ImGui::Checkbox("Highlight Wall Contact", &_simulation.highlightWallContact);
 

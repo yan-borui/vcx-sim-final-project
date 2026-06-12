@@ -4,8 +4,6 @@ namespace VCX::Labs::FluidSimulation {
     App::App():
         _ui(Labs::Common::UIOptions {}),
         _caseFluid({ Assets::ExampleScene::Fluid }),
-        _caseSubgrid({ Assets::ExampleScene::Fluid }),
-        _caseFreeSurfaceSeparation({ Assets::ExampleScene::Fluid }),
         _caseVariation({ Assets::ExampleScene::Fluid }) {
     }
 
