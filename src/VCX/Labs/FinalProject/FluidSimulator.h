@@ -47,6 +47,7 @@ namespace VCX::Labs::Final {
 
         std::vector<float> m_p;               // Pressure array
         std::vector<float> m_s;               // 0.0 for solid cells, 1.0 for fluid cells, used to update m_type
+        std::vector<float> m_baseS;           // Static tank boundary copied before dynamic rigid voxelization
         std::vector<int>   m_type;            // Flags array (const int EMPTY_CELL = 0; const int FLUID_CELL = 1; const int SOLID_CELL = 2;)
                                               // m_type = SOLID_CELL if m_s == 0.0;
                                               // m_type = FLUID_CELL if has particle and m_s == 1;
@@ -69,6 +70,7 @@ namespace VCX::Labs::Final {
         float overRelaxation    = 0.5f;
         bool  compensateDrift   = true;
         float compensateDriftWeight = 0.1f;
+        bool  voxelizeDynamicBody = true;
 
 
         void integrateParticles(float timeStep);
@@ -80,6 +82,9 @@ namespace VCX::Labs::Final {
             std::vector<float> const & levelSet,
             int                        fluidCell,
             int                        airCell) const;
+        bool      isValidCell(glm::ivec3 const & index) const;
+        glm::vec3 cellCenter(glm::ivec3 const & index) const;
+        void      rebuildSolidCellsFromBody();
 
         virtual void        transferVelocities(bool toGrid, float flipRatio);
         virtual void        solveIncompressibility(int numIters, float dt, float overRelaxation, bool compensateDrift);
@@ -174,6 +179,8 @@ namespace VCX::Labs::Final {
             m_p.resize(m_iNumCells, 0.0);
             m_s.clear();
             m_s.resize(m_iNumCells, 0.0);
+            m_baseS.clear();
+            m_baseS.resize(m_iNumCells, 0.0);
             m_type.clear();
             m_type.resize(m_iNumCells, 0);
             m_particleDensity.clear();
@@ -202,6 +209,7 @@ namespace VCX::Labs::Final {
                         if (i == 0 || i >= m_iCellX - 2 || j == 0 || j >= m_iCellY - 2 || k == 0 || k >= m_iCellZ - 2)
                             s = 0.0f; // solid
                         m_s[i * n + j * m + k] = s;
+                        m_baseS[i * n + j * m + k] = s;
                     }
                 }
             }
