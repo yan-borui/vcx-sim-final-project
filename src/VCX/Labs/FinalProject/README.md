@@ -28,6 +28,7 @@ CaseFluid (UI/主循环，在 CaseCoupled.h/cpp)
 | **SubgridSimulator.h/cpp** | Batty 论文的 MAC 面流体体积分数加权压力投影，保留小于单个网格的通道流动 |
 | **FreeSurfaceSeparationSimulator.h/cpp** | Batty 论文第 4 节壁面自然分离条件，使用逐壁面 active-set 近似 KKT 互补条件 |
 | **VariationalCoupledSimulator.h/cpp** | 将子网格质量权重和逐壁面分离条件接入流固耦合 case |
+| **VariationalSimulator.h/cpp** | 实现变分耦合 |
 | **RigidBody.h** | 刚体定义（位置、速度、旋转、SDF 距离查询） |
 | **CaseCoupled.h/cpp** | 主程序入口、UI界面、渲染循环、流体-刚体耦合的主逻辑 |
 | **tests/SimulatorTests.cpp** | 子网格、自然分离和双向耦合的数值回归测试 |
