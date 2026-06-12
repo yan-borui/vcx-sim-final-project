@@ -216,7 +216,7 @@ namespace VCX::Labs::FluidSimulation {
         _sim->setupScene(_res);
         std::fill(_sim->m_vel.begin(), _sim->m_vel.end(), glm::vec3(0.0f));
     std::fill(_sim->m_pre_vel.begin(), _sim->m_pre_vel.end(), glm::vec3(0.0f));
-        _body.Reset({0, 0.3f, 0}, {0,0,0}, {0.3f, 0.3f, 0.3f}, 0.1f, {0.8f, 0.2f, 0.2f});
+        _body.Reset({0, 0.3f, 0}, {0,0,0}, {0.3f, 0.3f, 0.3f}, 1.0f, {0.8f, 0.2f, 0.2f});
         _sim->m_body = &_body;
         numofSpheres = _sim->m_iNumSpheres;
         _r = _sim->m_particleRadius; //cell size
