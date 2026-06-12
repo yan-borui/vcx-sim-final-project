@@ -48,6 +48,7 @@ namespace {
         float MaxAngularSpeed    = 0.0f;
         float MaxParticleSpeed   = 0.0f;
         float MaxFeedbackImpulse = 0.0f;
+        int    MaxKktSolves      = 0;
     };
 
     CoupledScenarioMetrics runDefaultCoupledScenario(int frameCount) {
@@ -107,6 +108,9 @@ namespace {
             metrics.MaxFeedbackImpulse = std::max(
                 metrics.MaxFeedbackImpulse,
                 glm::length(simulation.m_feedbackForce) * dt);
+            metrics.MaxKktSolves = std::max(
+                metrics.MaxKktSolves,
+                simulation.wallSeparationIterations);
             for (glm::vec3 const velocity : simulation.m_particleVel)
                 metrics.MaxParticleSpeed =
                     std::max(metrics.MaxParticleSpeed, glm::length(velocity));
@@ -600,6 +604,9 @@ namespace {
         require(
             metrics.MaxFeedbackImpulse < 0.5f,
             "default coupled pressure feedback produced an excessive impulse");
+        require(
+            metrics.MaxKktSolves < 16,
+            "default coupled wall-separation QP required too many active-set steps");
     }
 } // namespace
 

@@ -119,6 +119,10 @@ namespace VCX::Labs::FluidSimulation {
             ImGui::Checkbox("Sub-grid weights", &_simulation.useSubgridWeights);
             ImGui::Checkbox("Wall separation", &_simulation.enableWallSeparation);
             ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
+            ImGui::Text(
+                "Wall KKT: %.3e (%d QP steps)",
+                _simulation.wallSeparationKktResidual,
+                _simulation.wallSeparationIterations);
         }
 
         if (ImGui::SliderInt("Grid Resolution", &_res, 10, 24))

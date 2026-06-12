@@ -10,7 +10,8 @@ namespace VCX::Labs::Final {
         bool  enableWallSeparation       = true;
         int   volumeSamplesPerAxis       = 4;
         float pressureResidual           = 0.0f;
-        float wallSeparationKktResidual = 0.0f;
+        float wallSeparationKktResidual  = 0.0f;
+        int   wallSeparationIterations   = 0;
         bool  pressureSolveSucceeded     = true;
 
         void setupScene(int res) override;
