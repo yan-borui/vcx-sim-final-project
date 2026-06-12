@@ -63,7 +63,7 @@ namespace VCX::Labs::Final {
         glm::vec3 m_feedbackTorque = {0.0f, 0.0f, 0.0f};
 
         int   numSubSteps       = 2;
-        int   numParticleIters  = 3;
+        int   numParticleIters  = 4;
         int   numPressureIters  = 30;
         bool  separateParticles = true;
         float overRelaxation    = 0.5f;
@@ -188,8 +188,8 @@ namespace VCX::Labs::Final {
 
             float _h      = tank.y / res;
             float point_r = 0.3 * _h;
-            float dx      = 1.7 * point_r;
-            float dy      = sqrt(3.0) / 2.0 * dx;
+            float dx      = 1.5 * point_r;
+            float dy      = 1.5 * dx;
             float dz      = dx;
 
             int numX = floor((relWater.x * tank.x - 2.0 * _h - 2.0 * point_r) / dx);
