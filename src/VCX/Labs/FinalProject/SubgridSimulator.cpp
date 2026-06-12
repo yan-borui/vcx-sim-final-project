@@ -30,6 +30,7 @@ namespace VCX::Labs::Final {
     void SubgridSimulator::setupScene(int res) {
         Simulator::setupScene(res);
 
+        voxelizeDynamicBody = false;
         gravity           = { 6.0f, 0.0f, 0.0f };
         m_fRatio          = 0.9f;
         numPressureIters  = 120;
