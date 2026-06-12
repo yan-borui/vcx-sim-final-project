@@ -1,6 +1,38 @@
 #include "Labs/FinalProject/FluidSimulator.h"
 
 namespace VCX::Labs::Final {
+    bool Simulator::isValidCell(glm::ivec3 const & index) const {
+        return index.x >= 0 && index.x < m_iCellX
+            && index.y >= 0 && index.y < m_iCellY
+            && index.z >= 0 && index.z < m_iCellZ;
+    }
+
+    glm::vec3 Simulator::cellCenter(glm::ivec3 const & index) const {
+        return (glm::vec3(index) + glm::vec3(0.5f)) * m_h - glm::vec3(0.5f);
+    }
+
+    void Simulator::rebuildSolidCellsFromBody() {
+        if (m_baseS.size() == m_s.size())
+            m_s = m_baseS;
+
+        if (! voxelizeDynamicBody || ! m_body)
+            return;
+
+        float const solidBand = 0.5f * m_h;
+        for (int k = 1; k < m_iCellZ - 2; ++k) {
+            for (int j = 1; j < m_iCellY - 2; ++j) {
+                for (int i = 1; i < m_iCellX - 2; ++i) {
+                    glm::ivec3 const cell { i, j, k };
+                    int const        idx = index2GridOffset(cell);
+                    if (m_baseS[idx] <= 0.0f)
+                        continue;
+                    if (m_body->GetSDF(cellCenter(cell)) < solidBand)
+                        m_s[idx] = 0.0f;
+                }
+            }
+        }
+    }
+
     std::vector<float> Simulator::buildParticleLevelSet() const {
         float const farDistance         = 3.0f * m_h;
         float const reconstructionRadius = 0.75f * m_h;
@@ -73,6 +105,7 @@ namespace VCX::Labs::Final {
     }
 
     void Simulator::handleParticleCollisions() {
+        float buffer = 0.01f * m_h;
         float minBound = -0.5f + m_h;
         float maxBound =  0.5f - m_h;
         for (int i = 0; i < m_iNumSpheres; ++i) {
@@ -89,21 +122,17 @@ namespace VCX::Labs::Final {
 
             if (m_body) {
                 float dist = m_body->GetSDF(m_particlePos[i]);
-                if (dist < 0.0f) {
-                    // 计算表面法线 (通过微扰采样)
-                    float eps = 0.001f;
-                    glm::vec3 n = glm::normalize(glm::vec3(
-                        m_body->GetSDF(m_particlePos[i] + glm::vec3(eps,0,0)) - m_body->GetSDF(m_particlePos[i] - glm::vec3(eps,0,0)),
-                        m_body->GetSDF(m_particlePos[i] + glm::vec3(0,eps,0)) - m_body->GetSDF(m_particlePos[i] - glm::vec3(0,eps,0)),
-                        m_body->GetSDF(m_particlePos[i] + glm::vec3(0,0,eps)) - m_body->GetSDF(m_particlePos[i] - glm::vec3(0,0,eps))
-                    ));
-                    m_particlePos[i] -= dist * n; // 推回表面
+                float const collisionBand = -0.15f * m_h;
+                if (dist < collisionBand) {
+                    glm::vec3 n = m_body->GetSDFNormal(m_particlePos[i], 0.25f * m_h);
+                    m_particlePos[i] += (0.05f * m_h - dist) * n;
+
                     glm::vec3 const bodyVelocity =
                         m_body->GetVelocityAtPoint(m_particlePos[i] - m_body->position);
-                    float const inwardSpeed =
-                        glm::dot(m_particleVel[i] - bodyVelocity, n);
-                    if (inwardSpeed < 0.0f)
-                        m_particleVel[i] -= inwardSpeed * n;
+                    glm::vec3 const relativeVelocity = m_particleVel[i] - bodyVelocity;
+                    float const     normalSpeed      = glm::dot(relativeVelocity, n);
+                    if (normalSpeed < 0.0f)
+                        m_particleVel[i] -= normalSpeed * n;
                 }
             }
         }
@@ -170,15 +199,15 @@ namespace VCX::Labs::Final {
                 float wallMax =  0.5f - m_h;
 
                 for (int d = 0; d < 3; d++) {
-                    // 检查最小边界 (地面、左墙、后墙)
+                    // 妫€鏌ユ渶灏忚竟鐣?(鍦伴潰銆佸乏澧欍€佸悗澧?
                     float dMin = m_particlePos[i][d] - wallMin;
-                    if (dMin < m_particleRadius) { // 如果粒子半径触碰到了墙
-                        m_particlePos[i][d] += (m_particleRadius - dMin) * 0.5f; // 往回推
+                    if (dMin < m_particleRadius) {
+                        m_particlePos[i][d] += (m_particleRadius - dMin) * 0.5f;
                     }
-                    // 检查最大边界 (天花板、右墙、前墙)
+                    // 妫€鏌ユ渶澶ц竟鐣?(澶╄姳鏉裤€佸彸澧欍€佸墠澧?
                     float dMax = wallMax - m_particlePos[i][d];
                     if (dMax < m_particleRadius) {
-                        m_particlePos[i][d] -= (m_particleRadius - dMax) * 0.5f; // 往回推
+                        m_particlePos[i][d] -= (m_particleRadius - dMax) * 0.5f; // 寰€鍥炴帹
                     }
                 }
             }
@@ -193,7 +222,7 @@ namespace VCX::Labs::Final {
 
             int idx = index2GridOffset(cellIndex);
             if (idx >= 0 && idx < m_iNumCells) {
-                m_particleDensity[idx] += 1.0f; // 每个粒子对所在格子的密度贡献为1
+                m_particleDensity[idx] += 1.0f; // 姣忎釜绮掑瓙瀵规墍鍦ㄦ牸瀛愮殑瀵嗗害璐＄尞涓?
             }
         }
         if (m_particleRestDensity == 0.0f) {
@@ -203,12 +232,14 @@ namespace VCX::Labs::Final {
                 sum += m_particleDensity[i];
                 count++;
             }
-            m_particleRestDensity = sum / count; // 计算平均密度作为静止状态下的密度
+            m_particleRestDensity = sum / count;
         }
     }
 
     void Simulator::transferVelocities(bool toGrid, float flipRatio) {
         if (toGrid) {
+            rebuildSolidCellsFromBody();
+
             // clear grid velocities and near_num
             std::fill(m_vel.begin(), m_vel.end(), glm::vec3(0.0f));
             for (int i = 0; i < 3; i++) {
@@ -220,7 +251,6 @@ namespace VCX::Labs::Final {
             }
         }
 
-        // 遍历所有粒子
         for (int p = 0; p < m_iNumSpheres; p++) {
             glm::vec3 pos = m_particlePos[p];
             glm::vec3 posRelGrid = pos + glm::vec3(0.5f);
@@ -229,11 +259,10 @@ namespace VCX::Labs::Final {
             int centerIdx = index2GridOffset(cellIndex);
             if (centerIdx >= 0 && centerIdx < m_iNumCells && m_type[centerIdx] == EMPTY_CELL) m_type[centerIdx] = FLUID_CELL;
 
-            // 对X，Y，Z三个方向分别处理
+            // 瀵筙锛孻锛孼涓変釜鏂瑰悜鍒嗗埆澶勭悊
             for (int dir = 0; dir < 3; dir++) {
                 glm::vec3 offset = glm::vec3(0.5f);
-                offset[dir] = 0.0f; // 只在当前方向上偏移
-
+                offset[dir] = 0.0f; // 鍙湪褰撳墠鏂瑰悜涓婂亸绉?
                 glm::vec3 f_idx = (pos + glm::vec3(0.5f) - offset * m_h) * m_fInvSpacing;
                 glm::ivec3 baseIdx = glm::ivec3(floor(f_idx));
                 glm::vec3 delta = f_idx - glm::vec3(baseIdx);
@@ -257,7 +286,6 @@ namespace VCX::Labs::Final {
                 };
 
                 if (toGrid) {
-                    // P2G: 粒子到网格
                     float pVel = m_particleVel[p][dir];
                     for (int n = 0; n < 8; n++) {
                         int gIdx = index2GridOffset(neighbor[n]);
@@ -267,7 +295,6 @@ namespace VCX::Labs::Final {
                         }
                     }
                 } else {
-                    // G2P: 网格到粒子
                     float v_pic = 0.0f;
                     float v_delta = 0.0f;
                     for (int n = 0; n < 8; n++) {
@@ -285,19 +312,19 @@ namespace VCX::Labs::Final {
         }
 
         if (toGrid) {
-            // 归一化网格速度
+            // 褰掍竴鍖栫綉鏍奸€熷害
             for (int i = 0; i < m_iNumCells; i++) {
                 for (int dir = 0; dir < 3; dir++) {
                     if (m_near_num[dir][i] > 0.0f) {
                         if (isValidVelocity(i % m_iCellX, (i / m_iCellX) % m_iCellY, i / (m_iCellX * m_iCellY), dir)) {
                             m_vel[i][dir] /= m_near_num[dir][i];
                         } else {
-                            m_vel[i][dir] = 0.0f; // 没有有效流体邻居，速度设为0
+                            m_vel[i][dir] = 0.0f; // 娌℃湁鏈夋晥娴佷綋閭诲眳锛岄€熷害璁句负0
                         }
                     }
                 }
             }
-            m_pre_vel = m_vel; // 保存当前网格速度用于下一次计算v_delta
+            m_pre_vel = m_vel; // 淇濆瓨褰撳墠缃戞牸閫熷害鐢ㄤ簬涓嬩竴娆¤绠梫_delta
         }
     }
     
@@ -363,12 +390,7 @@ namespace VCX::Labs::Final {
                         float dist = m_body->GetSDF(cellPos); 
                 
                         if (dist < m_h) {
-                            float eps = 0.001f;
-                            glm::vec3 normal = glm::normalize(glm::vec3(
-                                m_body->GetSDF(cellPos + glm::vec3(eps, 0, 0)) - m_body->GetSDF(cellPos - glm::vec3(eps, 0, 0)),
-                                m_body->GetSDF(cellPos + glm::vec3(0, eps, 0)) - m_body->GetSDF(cellPos - glm::vec3(0, eps, 0)),
-                                m_body->GetSDF(cellPos + glm::vec3(0, 0, eps)) - m_body->GetSDF(cellPos - glm::vec3(0, 0, eps))
-                            ));
+                            glm::vec3 normal = m_body->GetSDFNormal(cellPos, 0.25f * m_h);
 
                             float area = m_h * m_h;
                             glm::vec3 force = -normal * press * area * 45.0f;
@@ -394,13 +416,11 @@ namespace VCX::Labs::Final {
                 m_particleColor[i] = defaultColor;
                 continue; 
             } else if (m_colorMode == ColorMode::Velocity) { 
-                // 速度模式：蓝 -> 紫
                 float speed = glm::length(m_particleVel[i]);
                 float ratio = std::clamp(speed / 0.8f, 0.0f, 1.0f);
                 m_particleColor[i] = glm::mix(defaultColor, purple, ratio);
             } 
             else {
-                // 密度与压强模式需要查询网格数据
                 glm::vec3 posRel = (m_particlePos[i] + glm::vec3(0.5f)) * m_fInvSpacing;
                 int cx = std::clamp((int)posRel.x, 0, m_iCellX - 1);
                 int cy = std::clamp((int)posRel.y, 0, m_iCellY - 1);
@@ -408,12 +428,10 @@ namespace VCX::Labs::Final {
                 int idx = index2GridOffset({cx, cy, cz});
 
                 if (m_colorMode == ColorMode::Density) {
-                    // 密度：蓝 -> 黄
                     float diff = m_particleDensity[idx] - m_particleRestDensity;
                     float ratio = std::clamp(diff / 2.0f + 0.1f, 0.0f, 1.0f);
                     m_particleColor[i] = glm::mix(defaultColor, yellow, ratio);
                 } else if (m_colorMode == ColorMode::Pressure) {
-                    // 压强：蓝 -> 红
                     float pressure = m_p[idx];
                     float ratio = std::clamp(pressure / 1.2f, 0.0f, 1.0f);
                     m_particleColor[i] = glm::mix(defaultColor, red, ratio);
