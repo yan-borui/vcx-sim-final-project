@@ -9,28 +9,12 @@ layout(location = 0) out vec3 v_Position;
 layout(location = 1) out vec3 v_Normal;
 layout(location = 2) out vec3 v_Color;
 
-struct Light {
-    vec3  Intensity;
-    vec3  Direction;   // For spot and directional lights.
-    vec3  Position;    // For point and spot lights.
-    float CutOff;      // For spot lights.
-    float OuterCutOff; // For spot lights.
-};
-
-layout(std140) uniform PassConstants {
-    mat4  u_Projection;
-    mat4  u_View;
-    vec3  u_ViewPosition;
-    vec3  u_AmbientIntensity;
-    Light u_Lights[4];
-    int   u_CntPointLights;
-    int   u_CntSpotLights;
-    int   u_CntDirectionalLights;
-};
+uniform mat4 u_FluidProjection;
+uniform mat4 u_FluidView;
 
 void main() {
     v_Position  = a_Position + a_Offset;
     v_Normal    = a_Normal;
     v_Color     = a_Color;
-    gl_Position = u_Projection * u_View * vec4(v_Position, 1.);
+    gl_Position = u_FluidProjection * u_FluidView * vec4(v_Position, 1.);
 }
