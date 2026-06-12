@@ -5,6 +5,7 @@
 #include "Engine/GL/Frame.hpp"
 #include "Engine/GL/Program.h"
 #include "Engine/GL/UniformBlock.hpp"
+#include "Engine/loader.h"
 #include "Engine/Sphere.h"
 #include "Labs/Common/ICase.h"
 #include "Labs/Common/ImageRGB.h"
@@ -12,6 +13,7 @@
 #include "Labs/FinalProject/APICSimulator.h"
 #include "Labs/FinalProject/CGSimulator.h"
 #include "Labs/FinalProject/FluidSimulator.h"
+#include "Labs/FinalProject/MeshSDF.h"
 #include "Labs/FinalProject/VariationalCoupledSimulator.h"
 #include "Labs/Scene/Content.h"
 #include "Labs/Scene/SceneObject.h"
@@ -34,7 +36,7 @@ namespace VCX::Labs::FluidSimulation {
         enum class DemoShape {
             Box    = 0,
             Sphere = 1,
-            Bunny  = 2
+            Mesh   = 2
         };
 
         std::vector<Assets::ExampleScene> const _scenes;
@@ -70,14 +72,17 @@ namespace VCX::Labs::FluidSimulation {
         Final::CGSimulator                  _cgsimulation;
         Final::RigidBody                    _body;
         Engine::GL::UniqueIndexedRenderItem _RigidBodyItem;
+        Engine::GL::UniqueIndexedRenderItem _MeshBodyItem;
         Engine::GL::UniqueProgram           _flatProgram;
         bool                                _useAPIC { false };
         bool                                _useCG { false };
         DemoShape                           _demoShape { DemoShape::Box };
+        std::shared_ptr<Final::MeshSDF>     _meshSDF;
+        bool                                _meshReady { false };
 
         char const *          GetSceneName(std::size_t const i) const { return VCX::Labs::Rendering::Content::SceneNames[std::size_t(_scenes[i])].c_str(); }
         Engine::Scene const & GetScene(std::size_t const i) const { return VCX::Labs::Rendering::Content::Scenes[std::size_t(_scenes[i])]; }
         void                  ResetSystem();
-        void                  LoadBunnyIfNeeded();
+        void                  LoadMeshIfNeeded();
     };
 } // namespace VCX::Labs::FluidSimulation
