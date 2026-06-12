@@ -1,11 +1,10 @@
 #include "Labs/FinalProject/CaseFreeSurfaceSeparation.h"
 
 #include "Engine/app.h"
+#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     namespace {
-        constexpr std::uint32_t SeparationPassConstantsBinding = 3;
-
         const std::vector<glm::vec3> BoundaryVertices = {
             { -0.5f, -0.5f, -0.5f },
             {  0.5f, -0.5f, -0.5f },
