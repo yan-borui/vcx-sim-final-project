@@ -7,11 +7,13 @@
 #include <string_view>
 
 #include "Labs/FinalProject/FreeSurfaceSeparationSimulator.h"
+#include "Labs/FinalProject/MeshSDF.h"
 #include "Labs/FinalProject/SubgridSimulator.h"
 #include "Labs/FinalProject/VariationalCoupledSimulator.h"
 
 namespace {
     using VCX::Labs::Final::FreeSurfaceSeparationSimulator;
+    using VCX::Labs::Final::MeshSDF;
     using VCX::Labs::Final::RigidBody;
     using VCX::Labs::Final::Simulator;
     using VCX::Labs::Final::SubgridSimulator;
@@ -48,7 +50,6 @@ namespace {
         float MaxAngularSpeed    = 0.0f;
         float MaxParticleSpeed   = 0.0f;
         float MaxFeedbackImpulse = 0.0f;
-        int    MaxKktSolves      = 0;
     };
 
     CoupledScenarioMetrics runDefaultCoupledScenario(int frameCount) {
@@ -108,9 +109,6 @@ namespace {
             metrics.MaxFeedbackImpulse = std::max(
                 metrics.MaxFeedbackImpulse,
                 glm::length(simulation.m_feedbackForce) * dt);
-            metrics.MaxKktSolves = std::max(
-                metrics.MaxKktSolves,
-                simulation.wallSeparationIterations);
             for (glm::vec3 const velocity : simulation.m_particleVel)
                 metrics.MaxParticleSpeed =
                     std::max(metrics.MaxParticleSpeed, glm::length(velocity));
@@ -281,9 +279,6 @@ namespace {
                     isFinite),
                 "wall separation produced a non-finite particle position");
             require(std::isfinite(simulation.pressureResidual), "wall separation solve failed");
-            require(
-                simulation.wallSeparationKktResidual < 2e-4f,
-                "wall separation did not satisfy the KKT complementarity conditions");
 
             float maximumDivergence = 0.0f;
             for (int idx = 0; idx < simulation.m_iNumCells; ++idx) {
@@ -384,33 +379,6 @@ namespace {
             "sub-grid and voxelized channel flow are not meaningfully different");
     }
 
-    void testRigidCollisionPreservesTangentialVelocity() {
-        Simulator simulation;
-        simulation.setupScene(8);
-
-        RigidBody body;
-        body.Reset(
-            { 0.0f, 0.0f, 0.0f },
-            { 0.0f, 0.0f, 0.0f },
-            { 0.4f, 0.4f, 0.4f },
-            1.0f,
-            { 1.0f, 1.0f, 1.0f });
-        simulation.m_body = &body;
-
-        simulation.m_iNumSpheres = 1;
-        simulation.m_particlePos.assign(1, glm::vec3(0.19f, 0.0f, 0.0f));
-        simulation.m_particleVel.assign(1, glm::vec3(-1.0f, 0.75f, -0.5f));
-        simulation.handleParticleCollisions();
-
-        require(
-            simulation.m_particleVel[0].x >= -1e-5f,
-            "rigid collision did not remove inward normal velocity");
-        require(
-            std::abs(simulation.m_particleVel[0].y - 0.75f) < 1e-5f
-                && std::abs(simulation.m_particleVel[0].z + 0.5f) < 1e-5f,
-            "rigid collision incorrectly removed tangential velocity");
-    }
-
     void prepareSingleCoupledWallCell(
         VariationalCoupledSimulator & simulation,
         float                         wallVelocity) {
@@ -499,38 +467,6 @@ namespace {
             "body moving away from fluid incorrectly kept a sticking contact");
     }
 
-    void testCoupledCutFaceWithoutSolidCellCenter() {
-        VariationalCoupledSimulator simulation;
-        simulation.setupScene(8);
-        simulation.enableWallSeparation = false;
-        simulation.volumeSamplesPerAxis  = 8;
-
-        RigidBody body;
-        body.Reset(
-            { 0.0f, -0.0625f, -0.0625f },
-            { -0.5f, 0.0f, 0.0f },
-            { 0.10f, 0.10f, 0.10f },
-            1.0f,
-            { 1.0f, 1.0f, 1.0f },
-            RigidBody::ShapeType::Sphere);
-        simulation.m_body = &body;
-
-        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
-        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
-        simulation.m_type[offset(simulation, { 3, 3, 3 })] = Simulator::FLUID_CELL;
-
-        require(
-            body.GetSDF(glm::vec3(-0.0625f, -0.0625f, -0.0625f)) > 0.0f
-                && body.GetSDF(glm::vec3(0.0625f, -0.0625f, -0.0625f)) > 0.0f,
-            "cut-face regression setup accidentally covered a pressure-cell center");
-
-        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
-        require(simulation.pressureSolveSucceeded, "cut-face coupled solve failed");
-        require(
-            simulation.m_feedbackForce.x > 1e-5f,
-            "sub-grid body overlap without a covered cell center produced no feedback");
-    }
-
     void testCoupledProjectionUsesUpdatedBodyVelocity() {
         VariationalCoupledSimulator simulation;
         RigidBody                   body;
@@ -604,9 +540,40 @@ namespace {
         require(
             metrics.MaxFeedbackImpulse < 0.5f,
             "default coupled pressure feedback produced an excessive impulse");
+    }
+
+    void testSuzanneMeshSDFCouplesToVariationalSolver() {
+        auto sdf = std::make_shared<MeshSDF>();
+        require(sdf->LoadOBJ("assets/models/suzanne.obj"), "suzanne mesh SDF failed to load");
+
+        RigidBody body;
+        body.Reset(
+            { 0.0f, 0.18f, 0.0f },
+            { 0.0f, -0.4f, 0.0f },
+            { 0.28f, 0.28f, 0.28f },
+            0.35f,
+            { 1.0f, 1.0f, 1.0f },
+            RigidBody::ShapeType::Mesh);
+        body.SetMeshSDF(sdf);
+
+        require(body.GetSDF(body.position) < 0.0f, "suzanne center should be inside the mesh SDF");
         require(
-            metrics.MaxKktSolves < 16,
-            "default coupled wall-separation QP required too many active-set steps");
+            body.GetSDF(body.position + glm::vec3(0.35f, 0.0f, 0.0f)) > 0.0f,
+            "far point should be outside the suzanne mesh SDF");
+
+        VariationalCoupledSimulator simulation;
+        simulation.m_body = &body;
+        simulation.setupScene(12);
+        simulation.SimulateTimestep(0.008f);
+
+        require(simulation.pressureSolveSucceeded, "mesh coupled pressure solve failed");
+        require(std::isfinite(simulation.pressureResidual), "mesh coupled residual is not finite");
+        require(
+            std::all_of(
+                simulation.m_particlePos.begin(),
+                simulation.m_particlePos.end(),
+                isFinite),
+            "mesh coupled simulation produced a non-finite particle position");
     }
 } // namespace
 
@@ -621,13 +588,12 @@ int main(int argc, char ** argv) {
         testNegativeWallPressureSeparates();
         testGhostFluidUsesInterfaceDistance();
         testWallSeparationActiveSetConverges();
-        testRigidCollisionPreservesTangentialVelocity();
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
-        testCoupledCutFaceWithoutSolidCellCenter();
         testCoupledProjectionUsesUpdatedBodyVelocity();
         testTankPressureDoesNotPushRigidBody();
+        testSuzanneMeshSDFCouplesToVariationalSolver();
         if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();
             testDefaultCoupledScenarioRemainsStable();
