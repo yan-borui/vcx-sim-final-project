@@ -122,10 +122,9 @@ namespace VCX::Labs::Final {
 
             if (m_body) {
                 float dist = m_body->GetSDF(m_particlePos[i]);
-                float const collisionBand = -0.15f * m_h;
-                if (dist < collisionBand) {
+                if (dist < 0.0f) {
                     glm::vec3 n = m_body->GetSDFNormal(m_particlePos[i], 0.25f * m_h);
-                    m_particlePos[i] += (0.05f * m_h - dist) * n;
+                    m_particlePos[i] -= dist * n;
 
                     glm::vec3 const bodyVelocity =
                         m_body->GetVelocityAtPoint(m_particlePos[i] - m_body->position);

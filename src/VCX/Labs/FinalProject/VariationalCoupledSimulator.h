@@ -6,11 +6,13 @@
 
 namespace VCX::Labs::Final {
     struct VariationalCoupledSimulator : public Simulator {
-        bool  useSubgridWeights      = true;
-        bool  enableWallSeparation   = true;
-        int   volumeSamplesPerAxis   = 4;
-        float pressureResidual       = 0.0f;
-        bool  pressureSolveSucceeded = true;
+        bool  useSubgridWeights          = true;
+        bool  enableWallSeparation       = true;
+        int   volumeSamplesPerAxis       = 4;
+        float pressureResidual           = 0.0f;
+        float wallSeparationKktResidual  = 0.0f;
+        int   wallSeparationIterations   = 0;
+        bool  pressureSolveSucceeded     = true;
 
         void setupScene(int res) override;
         void solveIncompressibility(
@@ -21,11 +23,11 @@ namespace VCX::Labs::Final {
 
     private:
         struct BoundaryPressureSample {
-            int   PressureCell;
             int   FaceIndex;
             int   Direction;
             float DivergenceSign;
             float BoundaryWeight;
+            float BoundaryPressure;
             bool  Contact;
         };
 
@@ -37,9 +39,16 @@ namespace VCX::Labs::Final {
         glm::vec3 faceCenter(glm::ivec3 const & face, int dir) const;
         bool      isTankFaceOpen(glm::ivec3 const & face, int dir) const;
         bool      isSolidPressureCell(glm::ivec3 const & cell) const;
+        bool      hasFluidSupportAcrossOpenFace(glm::ivec3 const & cell) const;
+        bool      isPressureUnknownCell(glm::ivec3 const & cell) const;
         bool      isWallSeparationCandidate(glm::ivec3 const & cell) const;
         float     estimateFaceFluidFraction(glm::ivec3 const & face, int dir) const;
         float     faceWeight(int dir, int faceIdx) const;
+        float     wallGhostPressureScale(
+            glm::ivec3 const & cell,
+            glm::ivec3 const & face,
+            int                dir,
+            bool               bodyBoundary) const;
         float     solidVelocity(glm::ivec3 const & face, int dir, glm::ivec3 const & solidCell) const;
 
         void updateFaceFluidFractions();

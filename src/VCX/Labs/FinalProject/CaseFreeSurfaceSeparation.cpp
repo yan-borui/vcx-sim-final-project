@@ -1,11 +1,10 @@
 #include "Labs/FinalProject/CaseFreeSurfaceSeparation.h"
 
 #include "Engine/app.h"
+#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     namespace {
-        constexpr std::uint32_t SeparationPassConstantsBinding = 3;
-
         const std::vector<glm::vec3> BoundaryVertices = {
             { -0.5f, -0.5f, -0.5f },
             {  0.5f, -0.5f, -0.5f },
@@ -73,6 +72,7 @@ namespace VCX::Labs::FluidSimulation {
             "Active-set iterations: %d",
             _simulation.wallSeparationActiveSetIterations);
         ImGui::Text("Min contact pressure: %.5f", _simulation.minimumContactPressure);
+        ImGui::Text("KKT residual: %.3e", _simulation.wallSeparationKktResidual);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
         ImGui::Checkbox("Highlight Wall Contact", &_simulation.highlightWallContact);
 
@@ -130,6 +130,7 @@ namespace VCX::Labs::FluidSimulation {
 
         _lineProgram.GetUniforms().SetByName("u_Projection", projection);
         _lineProgram.GetUniforms().SetByName("u_View", view);
+        _lineProgram.GetUniforms().SetByName("u_Model", glm::mat4(1.0f));
         _lineProgram.GetUniforms().SetByName("u_Color", glm::vec3(1.0f));
         glLineWidth(_boundaryWidth);
         _boundaryItem.Draw({ _lineProgram.Use() });
@@ -137,6 +138,8 @@ namespace VCX::Labs::FluidSimulation {
 
         Rendering::ModelObject particles(
             _sphere, _simulation.m_particlePos, _simulation.m_particleColor);
+        _program.GetUniforms().SetByName("u_FluidProjection", projection);
+        _program.GetUniforms().SetByName("u_FluidView", view);
         particles.Mesh.Draw(
             { _program.Use() },
             _sphere.Mesh.Indices.size(),

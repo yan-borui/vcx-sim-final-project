@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_set>
 
-#include <Eigen/IterativeLinearSolvers>
 #include <Eigen/Sparse>
+#include <Eigen/SparseCholesky>
 
 namespace VCX::Labs::Final {
     namespace {
@@ -22,20 +23,160 @@ namespace VCX::Labs::Final {
             FaceNeighbor { { 0, -1, 0 }, { 0, 0, 0 }, 1, -1.0f },
             FaceNeighbor {  { 0, 1, 0 }, { 0, 1, 0 }, 1,  1.0f },
             FaceNeighbor { { 0, 0, -1 }, { 0, 0, 0 }, 2, -1.0f },
-            FaceNeighbor {  { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
+            FaceNeighbor { { 0, 0, 1 }, { 0, 0, 1 }, 2,  1.0f },
         };
 
-        constexpr float WallSeparationGhostScale = 2.0f;
+        using Matrix6 = Eigen::Matrix<double, 6, 6>;
+
+        struct BoundQpResult {
+            Eigen::VectorXd Pressure;
+            Eigen::VectorXd Gradient;
+            int             Sweeps;
+            bool            Converged;
+        };
+
+        BoundQpResult solveNonnegativeQuadratic(
+            Eigen::MatrixXd const & hessian,
+            Eigen::VectorXd const & rhs) {
+            int const size = int(rhs.size());
+            BoundQpResult result {
+                .Pressure  = Eigen::VectorXd::Zero(size),
+                .Gradient  = -rhs,
+                .Sweeps    = 0,
+                .Converged = size == 0,
+            };
+            if (size == 0)
+                return result;
+
+            constexpr double KktTolerance = 1e-7;
+            std::vector<char> freeVariables(size, 0);
+            for (int index = 0; index < size; ++index)
+                freeVariables[index] = rhs[index] > KktTolerance;
+
+            // Solve the current contact set exactly. A repeated set indicates
+            // degeneracy, in which case projected coordinate descent finishes
+            // the same convex QP and is accepted only after a full KKT check.
+            std::unordered_set<std::size_t> visitedSets;
+            for (int iteration = 0; iteration < 4 * size + 32; ++iteration) {
+                std::size_t signature = 1469598103934665603ull;
+                for (char const isFree : freeVariables) {
+                    signature ^= std::size_t(isFree);
+                    signature *= 1099511628211ull;
+                }
+                if (! visitedSets.insert(signature).second)
+                    break;
+
+                std::vector<int> freeIndices;
+                freeIndices.reserve(size);
+                for (int index = 0; index < size; ++index) {
+                    if (freeVariables[index])
+                        freeIndices.push_back(index);
+                }
+
+                result.Pressure.setZero();
+                if (! freeIndices.empty()) {
+                    int const freeCount = int(freeIndices.size());
+                    Eigen::MatrixXd freeHessian(freeCount, freeCount);
+                    Eigen::VectorXd freeRhs(freeCount);
+                    for (int row = 0; row < freeCount; ++row) {
+                        freeRhs[row] = rhs[freeIndices[row]];
+                        for (int column = 0; column < freeCount; ++column) {
+                            freeHessian(row, column) =
+                                hessian(
+                                    freeIndices[row],
+                                    freeIndices[column]);
+                        }
+                    }
+                    Eigen::LDLT<Eigen::MatrixXd> freeFactor(freeHessian);
+                    if (freeFactor.info() != Eigen::Success)
+                        break;
+                    Eigen::VectorXd const freePressure =
+                        freeFactor.solve(freeRhs);
+                    if (! freePressure.allFinite())
+                        break;
+                    for (int row = 0; row < freeCount; ++row)
+                        result.Pressure[freeIndices[row]] =
+                            freePressure[row];
+                }
+
+                bool removedNegativePressure = false;
+                for (int index = 0; index < size; ++index) {
+                    if (freeVariables[index]
+                        && result.Pressure[index] < -KktTolerance) {
+                        freeVariables[index] = 0;
+                        removedNegativePressure = true;
+                    }
+                }
+                if (removedNegativePressure)
+                    continue;
+
+                result.Pressure = result.Pressure.cwiseMax(0.0);
+                result.Gradient =
+                    hessian * result.Pressure - rhs;
+
+                bool releasedConstraint = false;
+                for (int index = 0; index < size; ++index) {
+                    if (! freeVariables[index]
+                        && result.Gradient[index] < -KktTolerance) {
+                        freeVariables[index] = 1;
+                        releasedConstraint = true;
+                    }
+                }
+                result.Sweeps = iteration + 1;
+                if (! releasedConstraint) {
+                    result.Converged = true;
+                    return result;
+                }
+            }
+
+            result.Pressure = result.Pressure.cwiseMax(0.0);
+            result.Gradient = hessian * result.Pressure - rhs;
+            constexpr int MaximumSweeps = 100000;
+            for (int sweep = 0; sweep < MaximumSweeps; ++sweep) {
+                for (int index = 0; index < size; ++index) {
+                    double const diagonal = hessian(index, index);
+                    if (diagonal <= 1e-12)
+                        continue;
+                    double const nextPressure = std::max(
+                        0.0,
+                        result.Pressure[index]
+                            - result.Gradient[index] / diagonal);
+                    double const delta =
+                        nextPressure - result.Pressure[index];
+                    if (std::abs(delta) <= 1e-15)
+                        continue;
+                    result.Pressure[index] = nextPressure;
+                    result.Gradient.noalias() +=
+                        delta * hessian.col(index);
+                }
+
+                double kktResidual = 0.0;
+                for (int index = 0; index < size; ++index) {
+                    double const violation =
+                        result.Pressure[index] > KktTolerance
+                        ? std::abs(result.Gradient[index])
+                        : std::max(-result.Gradient[index], 0.0);
+                    kktResidual = std::max(kktResidual, violation);
+                }
+                ++result.Sweeps;
+                if (kktResidual <= KktTolerance) {
+                    result.Converged = true;
+                    break;
+                }
+            }
+            return result;
+        }
     }
 
     void VariationalCoupledSimulator::setupScene(int res) {
         Simulator::setupScene(res);
-        voxelizeDynamicBody = false;
         numPressureIters = 120;
         for (auto & fractions : _faceFluidFraction)
             fractions.assign(m_iNumCells, 0.0f);
-        pressureResidual       = 0.0f;
-        pressureSolveSucceeded = true;
+        pressureResidual          = 0.0f;
+        wallSeparationKktResidual = 0.0f;
+        wallSeparationIterations  = 0;
+        pressureSolveSucceeded    = true;
     }
 
     bool VariationalCoupledSimulator::isValidCell(glm::ivec3 const & cell) const {
@@ -74,17 +215,56 @@ namespace VCX::Labs::Final {
         return m_body && m_body->GetSDF(pressureCellCenter(cell)) < -1e-5f;
     }
 
+    bool VariationalCoupledSimulator::hasFluidSupportAcrossOpenFace(
+        glm::ivec3 const & cell) const {
+        if (! isSolidPressureCell(cell)
+            || ! isValidCell(cell)
+            || m_s[gridOffset(cell)] <= 0.0f)
+            return false;
+
+        for (FaceNeighbor const & side : FaceNeighbors) {
+            glm::ivec3 const face = cell + side.FaceOffset;
+            if (! isValidCell(face))
+                continue;
+            int const faceIdx = gridOffset(face);
+            if (faceWeight(side.Direction, faceIdx) <= 1e-6f)
+                continue;
+
+            glm::ivec3 const neighbor = cell + side.CellOffset;
+            if (! isValidCell(neighbor) || m_s[gridOffset(neighbor)] <= 0.0f)
+                continue;
+            if (m_type[gridOffset(neighbor)] == FLUID_CELL)
+                return true;
+        }
+        return false;
+    }
+
+    bool VariationalCoupledSimulator::isPressureUnknownCell(
+        glm::ivec3 const & cell) const {
+        if (! isValidCell(cell) || m_s[gridOffset(cell)] <= 0.0f)
+            return false;
+        return m_type[gridOffset(cell)] == FLUID_CELL
+            || hasFluidSupportAcrossOpenFace(cell);
+    }
+
     bool VariationalCoupledSimulator::isWallSeparationCandidate(glm::ivec3 const & cell) const {
         bool touchesSolid = false;
         bool touchesAir   = false;
 
         for (FaceNeighbor const & side : FaceNeighbors) {
+            glm::ivec3 const face     = cell + side.FaceOffset;
             glm::ivec3 const neighbor = cell + side.CellOffset;
-            if (isSolidPressureCell(neighbor)) {
+            int const        faceIdx  = gridOffset(face);
+            bool const       tankOpen = isTankFaceOpen(face, side.Direction);
+            float const      boundaryWeight =
+                tankOpen ? 1.0f - faceWeight(side.Direction, faceIdx) : 1.0f;
+            if (boundaryWeight > 1e-6f)
                 touchesSolid = true;
-            } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+            if (tankOpen
+                && isValidCell(neighbor)
+                && m_type[gridOffset(neighbor)] == EMPTY_CELL
+                && ! isSolidPressureCell(neighbor))
                 touchesAir = true;
-            }
         }
         return touchesSolid && touchesAir;
     }
@@ -107,7 +287,6 @@ namespace VCX::Labs::Final {
 
         int const sampleCount  = std::clamp(volumeSamplesPerAxis, 1, 16);
         int       fluidSamples = 0;
-
         for (int x = 0; x < sampleCount; ++x) {
             for (int y = 0; y < sampleCount; ++y) {
                 for (int z = 0; z < sampleCount; ++z) {
@@ -121,7 +300,6 @@ namespace VCX::Labs::Final {
                 }
             }
         }
-
         return float(fluidSamples)
             / float(sampleCount * sampleCount * sampleCount);
     }
@@ -133,7 +311,8 @@ namespace VCX::Labs::Final {
                     glm::ivec3 const face { i, j, k };
                     int const        idx = gridOffset(face);
                     for (int dir = 0; dir < 3; ++dir)
-                        _faceFluidFraction[dir][idx] = estimateFaceFluidFraction(face, dir);
+                        _faceFluidFraction[dir][idx] =
+                            estimateFaceFluidFraction(face, dir);
                 }
             }
         }
@@ -146,18 +325,40 @@ namespace VCX::Labs::Final {
         return fraction > 0.5f ? 1.0f : 0.0f;
     }
 
+    float VariationalCoupledSimulator::wallGhostPressureScale(
+        glm::ivec3 const & cell,
+        glm::ivec3 const & face,
+        int                dir,
+        bool               bodyBoundary) const {
+        if (! bodyBoundary || ! m_body)
+            return 2.0f;
+
+        float const minimumDistance = 1e-4f * m_h;
+        glm::vec3 const cellCenter  = pressureCellCenter(cell);
+        glm::vec3 const wallSample  = faceCenter(face, dir);
+        float const     cellPhi =
+            std::max(m_body->GetSDF(cellCenter), minimumDistance);
+        float const samplePhi = m_body->GetSDF(wallSample);
+
+        float distance = cellPhi;
+        if (samplePhi < -minimumDistance) {
+            float const segmentFraction = std::clamp(
+                cellPhi / (cellPhi - samplePhi),
+                0.05f,
+                1.0f);
+            distance =
+                segmentFraction * glm::length(wallSample - cellCenter);
+        }
+        return m_h / std::clamp(distance, 0.05f * m_h, m_h);
+    }
+
     float VariationalCoupledSimulator::solidVelocity(
         glm::ivec3 const & face,
         int                dir,
         glm::ivec3 const & solidCell) const {
         if (! m_body || ! isValidCell(solidCell))
             return 0.0f;
-
         glm::vec3 const center = faceCenter(face, dir);
-        if (m_body->GetSDF(pressureCellCenter(solidCell)) >= 0.0f
-            && m_body->GetSDF(center) >= 0.0f)
-            return 0.0f;
-
         return m_body->GetVelocityAtPoint(center - m_body->position)[dir];
     }
 
@@ -166,6 +367,7 @@ namespace VCX::Labs::Final {
         float dt,
         float overRelaxation,
         bool  compensateDrift) {
+        (void) numIters;
         (void) overRelaxation;
 
         updateFaceFluidFractions();
@@ -180,17 +382,19 @@ namespace VCX::Labs::Final {
                 (idx / m_iCellX) % m_iCellY,
                 idx / (m_iCellX * m_iCellY),
             };
-            if (m_type[idx] == FLUID_CELL && ! isSolidPressureCell(cell)) {
+            if (isPressureUnknownCell(cell)) {
                 cellToRow[idx] = int(rowToCell.size());
                 rowToCell.push_back(idx);
             }
         }
 
         std::fill(m_p.begin(), m_p.end(), 0.0f);
-        m_feedbackForce        = glm::vec3(0.0f);
-        m_feedbackTorque       = glm::vec3(0.0f);
-        pressureResidual       = 0.0f;
-        pressureSolveSucceeded = true;
+        m_feedbackForce             = glm::vec3(0.0f);
+        m_feedbackTorque            = glm::vec3(0.0f);
+        pressureResidual            = 0.0f;
+        wallSeparationKktResidual   = 0.0f;
+        wallSeparationIterations    = 0;
+        pressureSolveSucceeded      = true;
         if (rowToCell.empty())
             return;
 
@@ -200,438 +404,543 @@ namespace VCX::Labs::Final {
                 (idx / m_iCellX) % m_iCellY,
                 idx / (m_iCellX * m_iCellY));
         };
+        std::vector<glm::vec3> const intermediateVelocity = m_vel;
 
         struct WallFace {
             int   Row;
             int   FaceIndex;
             int   Direction;
+            int   UnconstrainedIndex;
+            int   CandidateIndex;
             float DivergenceSign;
+            float OpenWeight;
             float BoundaryWeight;
+            float GhostScale;
             float WallVelocity;
             bool  BodyBoundary;
             bool  Candidate;
-            bool  Contact;
-            bool  ReleaseBlocked;
         };
 
+        int const pressureCount = int(rowToCell.size());
         std::vector<WallFace> wallFaces;
-        std::vector<int>      wallFaceForSide(rowToCell.size() * FaceNeighbors.size(), -1);
-        for (int row = 0; row < int(rowToCell.size()); ++row) {
+        std::vector<int> wallFaceForSide(
+            rowToCell.size() * FaceNeighbors.size(),
+            -1);
+        for (int row = 0; row < pressureCount; ++row) {
             glm::ivec3 const cell = decodeCell(rowToCell[row]);
-            bool const       candidateCell =
-                enableWallSeparation && isWallSeparationCandidate(cell);
-            for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
-                FaceNeighbor const & side     = FaceNeighbors[sideIndex];
-                glm::ivec3 const     neighbor = cell + side.CellOffset;
-                if (! isSolidPressureCell(neighbor))
-                    continue;
-
-                glm::ivec3 const face    = cell + side.FaceOffset;
-                int const        faceIdx = gridOffset(face);
-                float const      boundaryWeight =
-                    1.0f - faceWeight(side.Direction, faceIdx);
+            bool const candidateCell =
+                enableWallSeparation
+                && m_type[rowToCell[row]] == FLUID_CELL
+                && isWallSeparationCandidate(cell);
+            for (int sideIndex = 0;
+                 sideIndex < int(FaceNeighbors.size());
+                 ++sideIndex) {
+                FaceNeighbor const & side = FaceNeighbors[sideIndex];
+                glm::ivec3 const neighbor = cell + side.CellOffset;
+                glm::ivec3 const face     = cell + side.FaceOffset;
+                int const        faceIdx  = gridOffset(face);
+                bool const       tankOpen =
+                    isTankFaceOpen(face, side.Direction);
+                float const openWeight =
+                    tankOpen ? faceWeight(side.Direction, faceIdx) : 0.0f;
+                float const boundaryWeight = 1.0f - openWeight;
                 if (boundaryWeight <= 1e-6f)
                     continue;
-                bool const bodyBoundary =
-                    m_body
-                    && isValidCell(neighbor)
-                    && m_s[gridOffset(neighbor)] > 0.0f
-                    && m_body->GetSDF(pressureCellCenter(neighbor)) < -1e-5f;
 
+                bool const bodyBoundary = tankOpen && m_body;
                 wallFaceForSide[row * FaceNeighbors.size() + sideIndex] =
                     int(wallFaces.size());
                 wallFaces.push_back(WallFace {
-                    .Row            = row,
-                    .FaceIndex      = faceIdx,
-                    .Direction      = side.Direction,
-                    .DivergenceSign = side.DivergenceSign,
-                    .BoundaryWeight = boundaryWeight,
-                    .WallVelocity   = solidVelocity(face, side.Direction, neighbor),
-                    .BodyBoundary   = bodyBoundary,
-                    .Candidate      = candidateCell,
-                    .Contact        = true,
-                    .ReleaseBlocked = false,
+                    .Row                = row,
+                    .FaceIndex          = faceIdx,
+                    .Direction          = side.Direction,
+                    .UnconstrainedIndex = -1,
+                    .CandidateIndex     = -1,
+                    .DivergenceSign     = side.DivergenceSign,
+                    .OpenWeight         = openWeight,
+                    .BoundaryWeight     = boundaryWeight,
+                    .GhostScale         = wallGhostPressureScale(
+                        cell,
+                        face,
+                        side.Direction,
+                        bodyBoundary),
+                    .WallVelocity       = solidVelocity(
+                        face,
+                        side.Direction,
+                        neighbor),
+                    .BodyBoundary       = bodyBoundary,
+                    .Candidate          = candidateCell,
                 });
             }
         }
 
-        std::vector<glm::vec3> const intermediateVelocity = m_vel;
+        int unconstrainedCount = pressureCount;
+        int candidateCount     = 0;
         for (WallFace & wallFace : wallFaces) {
-            if (! wallFace.Candidate)
-                continue;
-
-            float const unconstrainedSeparationSpeed =
-                -wallFace.DivergenceSign
-                * (intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
-                   - wallFace.WallVelocity);
-            if (unconstrainedSeparationSpeed > 1e-5f)
-                wallFace.Contact = false;
+            if (wallFace.Candidate)
+                wallFace.CandidateIndex = candidateCount++;
+            else
+                wallFace.UnconstrainedIndex = unconstrainedCount++;
         }
 
-        Eigen::VectorXd              pressure             = Eigen::VectorXd::Zero(int(rowToCell.size()));
-        Eigen::VectorXd              appliedPressure      = Eigen::VectorXd::Zero(int(rowToCell.size()));
-        auto                         solveWithContacts    = [&]() {
-            struct RigidPressureJacobian {
-                glm::vec3 Linear { 0.0f };
-                glm::vec3 Angular { 0.0f };
-            };
+        std::vector<char> pinnedRows(pressureCount, 0);
+        std::vector<char> visitedRows(pressureCount, 0);
+        for (int seed = 0; seed < pressureCount; ++seed) {
+            if (visitedRows[seed])
+                continue;
 
-            int const                           matrixSize = int(rowToCell.size());
-            Eigen::SparseMatrix<double>         matrix(matrixSize, matrixSize);
-            std::vector<Eigen::Triplet<double>> triplets;
-            triplets.reserve(matrixSize * 7);
-            Eigen::VectorXd rhs = Eigen::VectorXd::Zero(matrixSize);
+            bool             hasDirichletBoundary = false;
+            std::vector<int> component;
+            std::vector<int> pending { seed };
+            visitedRows[seed] = 1;
+            while (! pending.empty()) {
+                int const row = pending.back();
+                pending.pop_back();
+                component.push_back(row);
 
-            std::vector<char> pinnedRows(matrixSize, 0);
-            std::vector<char> visitedRows(matrixSize, 0);
-            for (int seed = 0; seed < matrixSize; ++seed) {
-                if (visitedRows[seed])
-                    continue;
-
-                bool             hasDirichletBoundary = false;
-                std::vector<int> component;
-                std::vector<int> pending { seed };
-                visitedRows[seed] = 1;
-                while (! pending.empty()) {
-                    int const row = pending.back();
-                    pending.pop_back();
-                    component.push_back(row);
-
-                    glm::ivec3 const cell = decodeCell(rowToCell[row]);
-                    for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
-                        FaceNeighbor const & side     = FaceNeighbors[sideIndex];
-                        glm::ivec3 const     neighbor = cell + side.CellOffset;
-                        int const            faceIdx  = gridOffset(cell + side.FaceOffset);
-                        int const            wallFaceIndex =
-                            wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
-                        if (wallFaceIndex >= 0) {
-                            WallFace const & wallFace = wallFaces[wallFaceIndex];
-                            if (wallFace.Candidate && ! wallFace.Contact)
-                                hasDirichletBoundary = true;
-                            continue;
-                        }
-                        if (isSolidPressureCell(neighbor))
-                            continue;
-
-                        float const openWeight = faceWeight(side.Direction, faceIdx);
-                        if (openWeight <= 1e-6f)
-                            continue;
-
-                        int const neighborRow = cellToRow[gridOffset(neighbor)];
-                        if (neighborRow >= 0) {
-                            if (! visitedRows[neighborRow]) {
-                                visitedRows[neighborRow] = 1;
-                                pending.push_back(neighborRow);
-                            }
-                        } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                            hasDirichletBoundary = true;
-                        }
-                    }
-                }
-
-                if (! hasDirichletBoundary)
-                    pinnedRows[component.front()] = 1;
-            }
-
-            bool const dynamicBody =
-                m_body && ! m_body->isStatic && m_body->mass > 1e-6f;
-            std::vector<RigidPressureJacobian> rigidJacobian(matrixSize);
-            std::vector<int>                   rigidRows;
-            if (dynamicBody) {
-                for (WallFace const & wallFace : wallFaces) {
-                    if (! wallFace.BodyBoundary
-                        || (wallFace.Candidate && ! wallFace.Contact)
-                        || pinnedRows[wallFace.Row])
-                        continue;
-
-                    glm::ivec3 const face {
-                        wallFace.FaceIndex % m_iCellX,
-                        (wallFace.FaceIndex / m_iCellX) % m_iCellY,
-                        wallFace.FaceIndex / (m_iCellX * m_iCellY),
-                    };
-                    glm::vec3 direction(0.0f);
-                    direction[wallFace.Direction] = wallFace.DivergenceSign;
-                    glm::vec3 const weightedDirection =
-                        wallFace.BoundaryWeight * direction;
-                    glm::vec3 const lever =
-                        faceCenter(face, wallFace.Direction) - m_body->position;
-                    rigidJacobian[wallFace.Row].Linear += weightedDirection;
-                    rigidJacobian[wallFace.Row].Angular +=
-                        glm::cross(lever, weightedDirection);
-                }
-
-                for (int row = 0; row < matrixSize; ++row) {
-                    if (glm::dot(rigidJacobian[row].Linear, rigidJacobian[row].Linear)
-                            + glm::dot(rigidJacobian[row].Angular, rigidJacobian[row].Angular)
-                        > 1e-12f)
-                        rigidRows.push_back(row);
-                }
-                triplets.reserve(
-                    matrixSize * 7 + rigidRows.size() * rigidRows.size());
-            }
-
-            for (int row = 0; row < matrixSize; ++row) {
-                if (pinnedRows[row]) {
-                    triplets.emplace_back(row, row, 1.0);
-                    continue;
-                }
-
-                int const        idx                = rowToCell[row];
-                glm::ivec3 const cell               = decodeCell(idx);
-                double           diagonal           = 0.0;
-                double           weightedDivergence = 0.0;
-
-                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
-                    FaceNeighbor const & side     = FaceNeighbors[sideIndex];
-                    glm::ivec3 const     face     = cell + side.FaceOffset;
-                    glm::ivec3 const     neighbor = cell + side.CellOffset;
-                    int const            faceIdx  = gridOffset(face);
-                    int const            wallFaceIndex =
+                glm::ivec3 const cell = decodeCell(rowToCell[row]);
+                for (int sideIndex = 0;
+                     sideIndex < int(FaceNeighbors.size());
+                     ++sideIndex) {
+                    FaceNeighbor const & side = FaceNeighbors[sideIndex];
+                    int const wallIndex =
                         wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
+                    if (wallIndex >= 0 && wallFaces[wallIndex].Candidate)
+                        hasDirichletBoundary = true;
 
-                    if (wallFaceIndex >= 0) {
-                        WallFace const & wallFace = wallFaces[wallFaceIndex];
-                        float const      velocity =
-                            wallFace.Candidate && ! wallFace.Contact
-                            ? intermediateVelocity[faceIdx][side.Direction]
-                            : wallFace.WallVelocity;
-                        weightedDivergence += side.DivergenceSign
-                            * double(wallFace.BoundaryWeight) * double(velocity);
-                        if (wallFace.Candidate && ! wallFace.Contact)
-                            diagonal +=
-                                wallFace.BoundaryWeight * WallSeparationGhostScale;
-                        continue;
-                    }
-
-                    if (isSolidPressureCell(neighbor))
+                    glm::ivec3 const face = cell + side.FaceOffset;
+                    glm::ivec3 const neighbor = cell + side.CellOffset;
+                    int const faceIdx = gridOffset(face);
+                    float const openWeight =
+                        faceWeight(side.Direction, faceIdx);
+                    if (openWeight <= 1e-6f
+                        || ! isValidCell(neighbor)
+                        || m_s[gridOffset(neighbor)] <= 0.0f)
                         continue;
 
-                    float const openWeight = faceWeight(side.Direction, faceIdx);
-                    if (openWeight <= 1e-6f)
-                        continue;
-
-                    weightedDivergence += side.DivergenceSign
-                        * double(openWeight)
-                        * double(intermediateVelocity[faceIdx][side.Direction]);
-
-                    int const neighborIdx = gridOffset(neighbor);
-                    int const neighborRow = cellToRow[neighborIdx];
+                    int const neighborRow =
+                        cellToRow[gridOffset(neighbor)];
                     if (neighborRow >= 0) {
-                        diagonal += openWeight;
-                        if (! pinnedRows[neighborRow])
-                            triplets.emplace_back(row, neighborRow, -double(openWeight));
-                    } else if (m_type[neighborIdx] == EMPTY_CELL) {
-                        diagonal += openWeight * ghostFluidPressureScale(
-                            liquidLevelSet,
-                            idx,
-                            neighborIdx);
-                    } else {
-                        diagonal += openWeight;
-                    }
-                }
-
-                if (compensateDrift && m_particleRestDensity > 0.0f) {
-                    float const densityError = m_particleDensity[idx] - m_particleRestDensity;
-                    if (densityError > 0.0f)
-                        weightedDivergence -= compensateDriftWeight * densityError;
-                }
-
-                if (diagonal <= 1e-8) {
-                    diagonal           = 1.0;
-                    weightedDivergence = 0.0;
-                }
-                triplets.emplace_back(row, row, diagonal);
-                rhs[row] = -weightedDivergence;
-            }
-
-            if (dynamicBody) {
-                float const cellVolume = m_h * m_h * m_h;
-                float const invMass    = 1.0f / m_body->mass;
-                glm::mat3 const inertiaInv = m_body->GetInertiaWorldInv();
-                for (int const row : rigidRows) {
-                    RigidPressureJacobian const & rowJacobian =
-                        rigidJacobian[row];
-                    for (int const column : rigidRows) {
-                        RigidPressureJacobian const & columnJacobian =
-                            rigidJacobian[column];
-                        double const coupling = double(cellVolume) * (
-                            double(invMass)
-                                * double(glm::dot(
-                                    rowJacobian.Linear,
-                                    columnJacobian.Linear))
-                            + double(glm::dot(
-                                rowJacobian.Angular,
-                                inertiaInv * columnJacobian.Angular)));
-                        if (std::abs(coupling) > 1e-12)
-                            triplets.emplace_back(row, column, coupling);
+                        if (! visitedRows[neighborRow]) {
+                            visitedRows[neighborRow] = 1;
+                            pending.push_back(neighborRow);
+                        }
+                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
+                        hasDirichletBoundary = true;
                     }
                 }
             }
+            if (! hasDirichletBoundary)
+                pinnedRows[component.front()] = 1;
+        }
 
-            matrix.setFromTriplets(triplets.begin(), triplets.end());
-            Eigen::ConjugateGradient<
-                Eigen::SparseMatrix<double>,
-                Eigen::Lower | Eigen::Upper,
-                Eigen::IncompleteCholesky<double>>
-                solver;
-            solver.setMaxIterations(std::max(numIters, 1));
-            solver.setTolerance(1e-5);
-            solver.compute(matrix);
-            if (solver.info() == Eigen::Success)
-                pressure = solver.solve(rhs);
-            pressureSolveSucceeded =
-                solver.info() == Eigen::Success && pressure.allFinite();
-            if (pressureSolveSucceeded) {
-                pressureResidual = float(solver.error());
+        Eigen::VectorXd rhsY = Eigen::VectorXd::Zero(unconstrainedCount);
+        Eigen::VectorXd rhsZ = Eigen::VectorXd::Zero(candidateCount);
+        std::vector<Eigen::Triplet<double>> triplets;
+        triplets.reserve(unconstrainedCount * 9);
+        Eigen::MatrixXd hybridYZ =
+            Eigen::MatrixXd::Zero(unconstrainedCount, candidateCount);
+        Eigen::MatrixXd candidateZZ =
+            Eigen::MatrixXd::Zero(candidateCount, candidateCount);
+        Eigen::MatrixXd rigidY =
+            Eigen::MatrixXd::Zero(unconstrainedCount, 6);
+        Eigen::MatrixXd rigidZ =
+            Eigen::MatrixXd::Zero(candidateCount, 6);
+
+        for (WallFace const & wallFace : wallFaces) {
+            int const   pressureRow = wallFace.Row;
+            double const coefficient =
+                double(wallFace.BoundaryWeight * wallFace.GhostScale);
+            double const pressureRhs =
+                -double(wallFace.DivergenceSign)
+                * double(wallFace.BoundaryWeight)
+                * double(intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]);
+            double const boundaryRhs =
+                double(wallFace.DivergenceSign)
+                * double(wallFace.BoundaryWeight)
+                * double(
+                    intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                    - wallFace.WallVelocity);
+
+            // q is pressure on the solid boundary. The fluid energy term is
+            // c * (p - q)^2 / 2; only candidate q variables receive q >= 0.
+            if (! pinnedRows[pressureRow]) {
+                triplets.emplace_back(
+                    pressureRow,
+                    pressureRow,
+                    coefficient);
+                rhsY[pressureRow] += pressureRhs;
+            }
+
+            int qRow = wallFace.UnconstrainedIndex;
+            if (wallFace.Candidate) {
+                int const qColumn = wallFace.CandidateIndex;
+                candidateZZ(qColumn, qColumn) += coefficient;
+                rhsZ[qColumn] += boundaryRhs;
+                if (! pinnedRows[pressureRow])
+                    hybridYZ(pressureRow, qColumn) -= coefficient;
             } else {
-                pressure.setZero();
-                pressureResidual = std::numeric_limits<float>::infinity();
-            }
-
-            appliedPressure = pressure;
-            for (WallFace const & wallFace : wallFaces) {
-                if (wallFace.Candidate && wallFace.Contact)
-                    appliedPressure[wallFace.Row] =
-                        std::max(appliedPressure[wallFace.Row], 0.0);
-            }
-
-            glm::vec3 bodyLinearVelocityDelta(0.0f);
-            glm::vec3 bodyAngularVelocityDelta(0.0f);
-            if (dynamicBody) {
-                glm::vec3 linearImpulse(0.0f);
-                glm::vec3 angularImpulse(0.0f);
-                float const cellVolume = m_h * m_h * m_h;
-                for (int const row : rigidRows) {
-                    float const pressureValue = float(appliedPressure[row]);
-                    linearImpulse +=
-                        cellVolume * rigidJacobian[row].Linear * pressureValue;
-                    angularImpulse +=
-                        cellVolume * rigidJacobian[row].Angular * pressureValue;
+                triplets.emplace_back(qRow, qRow, coefficient);
+                rhsY[qRow] += boundaryRhs;
+                if (! pinnedRows[pressureRow]) {
+                    triplets.emplace_back(
+                        pressureRow,
+                        qRow,
+                        -coefficient);
+                    triplets.emplace_back(
+                        qRow,
+                        pressureRow,
+                        -coefficient);
                 }
-                bodyLinearVelocityDelta = linearImpulse / m_body->mass;
-                bodyAngularVelocityDelta =
-                    m_body->GetInertiaWorldInv() * angularImpulse;
             }
 
-            m_vel = intermediateVelocity;
-            for (WallFace const & wallFace : wallFaces) {
-                if (wallFace.Candidate && ! wallFace.Contact)
+            if (! wallFace.BodyBoundary
+                || ! m_body
+                || m_body->isStatic
+                || m_body->mass <= 1e-6f)
+                continue;
+
+            glm::ivec3 const face = decodeCell(wallFace.FaceIndex);
+            glm::vec3 direction(0.0f);
+            direction[wallFace.Direction] = wallFace.DivergenceSign;
+            glm::vec3 const linear =
+                wallFace.BoundaryWeight * direction;
+            glm::vec3 const lever =
+                faceCenter(face, wallFace.Direction) - m_body->position;
+            glm::vec3 const angular = glm::cross(lever, linear);
+
+            auto assignRigidRow = [&](Eigen::MatrixXd & matrix, int row) {
+                matrix(row, 0) = linear.x;
+                matrix(row, 1) = linear.y;
+                matrix(row, 2) = linear.z;
+                matrix(row, 3) = angular.x;
+                matrix(row, 4) = angular.y;
+                matrix(row, 5) = angular.z;
+            };
+            if (wallFace.Candidate)
+                assignRigidRow(rigidZ, wallFace.CandidateIndex);
+            else
+                assignRigidRow(rigidY, qRow);
+        }
+
+        for (int row = 0; row < pressureCount; ++row) {
+            if (pinnedRows[row]) {
+                triplets.emplace_back(row, row, 1.0);
+                rhsY[row] = 0.0;
+                continue;
+            }
+
+            int const        idx  = rowToCell[row];
+            glm::ivec3 const cell = decodeCell(idx);
+            double diagonal = 0.0;
+            for (FaceNeighbor const & side : FaceNeighbors) {
+                glm::ivec3 const face     = cell + side.FaceOffset;
+                glm::ivec3 const neighbor = cell + side.CellOffset;
+                int const        faceIdx  = gridOffset(face);
+                float const openWeight =
+                    faceWeight(side.Direction, faceIdx);
+                if (openWeight <= 1e-6f
+                    || ! isValidCell(neighbor)
+                    || m_s[gridOffset(neighbor)] <= 0.0f)
                     continue;
 
-                float finalWallVelocity = wallFace.WallVelocity;
-                if (dynamicBody && wallFace.BodyBoundary) {
-                    glm::ivec3 const face {
-                        wallFace.FaceIndex % m_iCellX,
-                        (wallFace.FaceIndex / m_iCellX) % m_iCellY,
-                        wallFace.FaceIndex / (m_iCellX * m_iCellY),
-                    };
-                    glm::vec3 const lever =
-                        faceCenter(face, wallFace.Direction) - m_body->position;
-                    finalWallVelocity +=
-                        (bodyLinearVelocityDelta
-                         + glm::cross(bodyAngularVelocityDelta, lever))
-                            [wallFace.Direction];
-                }
-                m_vel[wallFace.FaceIndex][wallFace.Direction] =
-                    finalWallVelocity;
-            }
+                rhsY[row] -=
+                    double(side.DivergenceSign)
+                    * double(openWeight)
+                    * double(intermediateVelocity[faceIdx][side.Direction]);
 
-            for (int row = 0; row < matrixSize; ++row) {
-                glm::ivec3 const cell          = decodeCell(rowToCell[row]);
-                float const      pressureValue = float(appliedPressure[row]);
-                for (int sideIndex = 0; sideIndex < int(FaceNeighbors.size()); ++sideIndex) {
-                    FaceNeighbor const & side     = FaceNeighbors[sideIndex];
-                    glm::ivec3 const     face     = cell + side.FaceOffset;
-                    glm::ivec3 const     neighbor = cell + side.CellOffset;
-                    int const            faceIdx  = gridOffset(face);
-                    float                pressureScale = 1.0f;
-                    int const            wallFaceIndex =
-                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
-                    if (wallFaceIndex >= 0) {
-                        WallFace const & wallFace = wallFaces[wallFaceIndex];
-                        if (! wallFace.Candidate || wallFace.Contact)
-                            continue;
-                        pressureScale = WallSeparationGhostScale;
-                    } else if (
-                        isSolidPressureCell(neighbor)
-                        || faceWeight(side.Direction, faceIdx) <= 1e-6f) {
-                        continue;
-                    } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                        pressureScale = ghostFluidPressureScale(
-                            liquidLevelSet,
-                            rowToCell[row],
-                            gridOffset(neighbor));
-                    }
-
-                    m_vel[faceIdx][side.Direction] +=
-                        side.DivergenceSign * pressureScale * pressureValue;
+                int const neighborIdx = gridOffset(neighbor);
+                int const neighborRow = cellToRow[neighborIdx];
+                if (neighborRow >= 0) {
+                    diagonal += openWeight;
+                    if (! pinnedRows[neighborRow])
+                        triplets.emplace_back(
+                            row,
+                            neighborRow,
+                            -double(openWeight));
+                } else if (m_type[neighborIdx] == EMPTY_CELL) {
+                    diagonal += openWeight * ghostFluidPressureScale(
+                        liquidLevelSet,
+                        idx,
+                        neighborIdx);
+                } else {
+                    diagonal += openWeight;
                 }
             }
+
+            if (compensateDrift && m_particleRestDensity > 0.0f) {
+                float const densityError =
+                    m_particleDensity[idx] - m_particleRestDensity;
+                if (densityError > 0.0f)
+                    rhsY[row] += compensateDriftWeight * densityError;
+            }
+            triplets.emplace_back(row, row, std::max(diagonal, 1e-8));
+        }
+
+        Eigen::SparseMatrix<double> baseYY(
+            unconstrainedCount,
+            unconstrainedCount);
+        baseYY.setFromTriplets(triplets.begin(), triplets.end());
+
+        bool const dynamicBody =
+            m_body && ! m_body->isStatic && m_body->mass > 1e-6f;
+        Eigen::MatrixXd lowRankY =
+            Eigen::MatrixXd::Zero(unconstrainedCount, 6);
+        Eigen::MatrixXd lowRankZ =
+            Eigen::MatrixXd::Zero(candidateCount, 6);
+        if (dynamicBody) {
+            // Equation (13) adds J^T M_S^-1 J. Keep its rank-six factor
+            // instead of inserting a dense pressure block.
+            Matrix6 mobility = Matrix6::Zero();
+            float const cellVolume = m_h * m_h * m_h;
+            for (int axis = 0; axis < 3; ++axis)
+                mobility(axis, axis) = cellVolume / m_body->mass;
+            glm::mat3 const inertiaInv = m_body->GetInertiaWorldInv();
+            for (int row = 0; row < 3; ++row) {
+                for (int column = 0; column < 3; ++column) {
+                    mobility(3 + row, 3 + column) =
+                        cellVolume * double(inertiaInv[column][row]);
+                }
+            }
+            Eigen::LLT<Matrix6> mobilityFactor(mobility);
+            if (mobilityFactor.info() != Eigen::Success) {
+                pressureSolveSucceeded = false;
+                pressureResidual = std::numeric_limits<float>::infinity();
+                return;
+            }
+            Matrix6 const mobilityRoot = mobilityFactor.matrixL();
+            lowRankY = rigidY * mobilityRoot;
+            lowRankZ = rigidZ * mobilityRoot;
+        }
+
+        Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> factor;
+        factor.compute(baseYY);
+        if (factor.info() != Eigen::Success) {
+            pressureSolveSucceeded = false;
+            pressureResidual = std::numeric_limits<float>::infinity();
+            return;
+        }
+
+        Eigen::MatrixXd inverseLowRankY;
+        Eigen::LDLT<Matrix6> woodburyFactor;
+        if (dynamicBody) {
+            inverseLowRankY = factor.solve(lowRankY);
+            Matrix6 const woodbury =
+                Matrix6::Identity()
+                + lowRankY.transpose() * inverseLowRankY;
+            woodburyFactor.compute(woodbury);
+            if (woodburyFactor.info() != Eigen::Success) {
+                pressureSolveSucceeded = false;
+                pressureResidual = std::numeric_limits<float>::infinity();
+                return;
+            }
+        }
+
+        auto solveUnconstrained = [&](Eigen::MatrixXd const & rhs) {
+            Eigen::MatrixXd result = factor.solve(rhs);
+            if (dynamicBody) {
+                // Woodbury applies the rank-six rigid-body correction exactly.
+                result -= inverseLowRankY * woodburyFactor.solve(
+                    lowRankY.transpose() * result);
+            }
+            return result;
         };
 
-        bool      changedActiveSet       = false;
-        int const maxActiveSetIterations = enableWallSeparation
-            ? std::min<int>(256, 2 * int(wallFaces.size()) + 8)
-            : 1;
-        for (int iter = 0; iter < maxActiveSetIterations; ++iter) {
-            solveWithContacts();
-            changedActiveSet = false;
-            if (! enableWallSeparation)
-                break;
-
-            bool removedNegativePressureContact = false;
-            for (WallFace & wallFace : wallFaces) {
-                if (! wallFace.Candidate || ! wallFace.Contact)
-                    continue;
-
-                if (! wallFace.ReleaseBlocked && pressure[wallFace.Row] < -1e-5) {
-                    wallFace.Contact = false;
-                    removedNegativePressureContact = true;
-                    changedActiveSet = true;
-                }
-            }
-            if (removedNegativePressureContact)
-                continue;
-
-            for (WallFace & wallFace : wallFaces) {
-                if (! wallFace.Candidate || wallFace.Contact)
-                    continue;
-
-                float const separationSpeed =
-                    -wallFace.DivergenceSign
-                    * (m_vel[wallFace.FaceIndex][wallFace.Direction]
-                       - wallFace.WallVelocity);
-                if (separationSpeed < -1e-5f) {
-                    wallFace.Contact = true;
-                    wallFace.ReleaseBlocked = true;
-                    changedActiveSet = true;
-                }
-            }
-            if (! changedActiveSet)
-                break;
+        Eigen::MatrixXd fullYZ = hybridYZ;
+        Eigen::MatrixXd fullZZ = candidateZZ;
+        if (dynamicBody) {
+            fullYZ += lowRankY * lowRankZ.transpose();
+            fullZZ += lowRankZ * lowRankZ.transpose();
         }
-        if (changedActiveSet)
-            solveWithContacts();
 
-        for (int row = 0; row < int(rowToCell.size()); ++row)
-            m_p[rowToCell[row]] = float(appliedPressure[row]);
+        Eigen::VectorXd solvedRhsY = solveUnconstrained(rhsY);
+        Eigen::MatrixXd solvedYZ =
+            candidateCount > 0
+            ? solveUnconstrained(fullYZ)
+            : Eigen::MatrixXd(unconstrainedCount, 0);
+
+        Eigen::VectorXd candidatePressure =
+            Eigen::VectorXd::Zero(candidateCount);
+        Eigen::VectorXd reducedGradient =
+            Eigen::VectorXd::Zero(candidateCount);
+        bool qpConverged = true;
+        if (candidateCount > 0) {
+            // Eliminate unconstrained fluid/interior-wall pressures. The
+            // remaining nonnegative boundary pressures form the paper's LCP.
+            Eigen::MatrixXd reducedHessian =
+                fullZZ - fullYZ.transpose() * solvedYZ;
+            reducedHessian =
+                0.5 * (reducedHessian + reducedHessian.transpose());
+            Eigen::VectorXd reducedRhs =
+                rhsZ - fullYZ.transpose() * solvedRhsY;
+
+            BoundQpResult qpResult =
+                solveNonnegativeQuadratic(reducedHessian, reducedRhs);
+            candidatePressure       = std::move(qpResult.Pressure);
+            reducedGradient         = std::move(qpResult.Gradient);
+            wallSeparationIterations = qpResult.Sweeps;
+            qpConverged              = qpResult.Converged;
+        } else {
+            wallSeparationIterations = 1;
+        }
+
+        Eigen::VectorXd unconstrainedPressure = solveUnconstrained(
+            rhsY - fullYZ * candidatePressure);
+        if (! qpConverged
+            || ! unconstrainedPressure.allFinite()
+            || ! candidatePressure.allFinite()) {
+            pressureSolveSucceeded = false;
+            pressureResidual = std::numeric_limits<float>::infinity();
+            return;
+        }
+
+        Eigen::VectorXd unconstrainedResidual =
+            baseYY * unconstrainedPressure
+            + hybridYZ * candidatePressure
+            - rhsY;
+        if (dynamicBody) {
+            unconstrainedResidual += lowRankY * (
+                lowRankY.transpose() * unconstrainedPressure
+                + lowRankZ.transpose() * candidatePressure);
+        }
+        pressureResidual = float(
+            unconstrainedResidual.norm()
+            / std::max(rhsY.norm(), 1.0));
+
+        Eigen::VectorXd pressure =
+            unconstrainedPressure.head(pressureCount);
+        for (int row = 0; row < pressureCount; ++row)
+            m_p[rowToCell[row]] = float(pressure[row]);
+
+        auto boundaryPressure = [&](WallFace const & wallFace) {
+            if (wallFace.Candidate)
+                return float(std::max(
+                    candidatePressure[wallFace.CandidateIndex],
+                    0.0));
+            return float(
+                unconstrainedPressure[wallFace.UnconstrainedIndex]);
+        };
+
+        m_vel = intermediateVelocity;
+        for (int row = 0; row < pressureCount; ++row) {
+            glm::ivec3 const cell = decodeCell(rowToCell[row]);
+            float const pressureValue = float(pressure[row]);
+            for (FaceNeighbor const & side : FaceNeighbors) {
+                glm::ivec3 const face     = cell + side.FaceOffset;
+                glm::ivec3 const neighbor = cell + side.CellOffset;
+                int const        faceIdx  = gridOffset(face);
+                float const openWeight =
+                    faceWeight(side.Direction, faceIdx);
+                if (openWeight <= 1e-6f
+                    || ! isValidCell(neighbor)
+                    || m_s[gridOffset(neighbor)] <= 0.0f)
+                    continue;
+
+                float pressureScale = 1.0f;
+                int const neighborIdx = gridOffset(neighbor);
+                if (cellToRow[neighborIdx] < 0
+                    && m_type[neighborIdx] == EMPTY_CELL) {
+                    pressureScale = ghostFluidPressureScale(
+                        liquidLevelSet,
+                        rowToCell[row],
+                        neighborIdx);
+                }
+                m_vel[faceIdx][side.Direction] +=
+                    side.DivergenceSign
+                    * pressureScale
+                    * pressureValue;
+            }
+        }
 
         std::vector<BoundaryPressureSample> boundarySamples;
         boundarySamples.reserve(wallFaces.size());
         for (WallFace const & wallFace : wallFaces) {
-            if (! wallFace.BodyBoundary)
-                continue;
-            boundarySamples.push_back(BoundaryPressureSample {
-                .PressureCell    = rowToCell[wallFace.Row],
-                .FaceIndex       = wallFace.FaceIndex,
-                .Direction       = wallFace.Direction,
-                .DivergenceSign  = wallFace.DivergenceSign,
-                .BoundaryWeight  = wallFace.BoundaryWeight,
-                .Contact         = ! wallFace.Candidate || wallFace.Contact,
-            });
+            float const q = boundaryPressure(wallFace);
+            if (wallFace.OpenWeight <= 1e-6f) {
+                m_vel[wallFace.FaceIndex][wallFace.Direction] =
+                    intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                    + wallFace.DivergenceSign
+                        * wallFace.GhostScale
+                        * (float(pressure[wallFace.Row]) - q);
+            }
+            if (wallFace.BodyBoundary) {
+                boundarySamples.push_back(BoundaryPressureSample {
+                    .FaceIndex        = wallFace.FaceIndex,
+                    .Direction        = wallFace.Direction,
+                    .DivergenceSign   = wallFace.DivergenceSign,
+                    .BoundaryWeight   = wallFace.BoundaryWeight,
+                    .BoundaryPressure = q,
+                    .Contact          = ! wallFace.Candidate || q > 1e-7f,
+                });
+            }
+        }
+        applyRigidBodyFeedback(boundarySamples, dt);
+
+        glm::vec3 predictedLinearDelta(0.0f);
+        glm::vec3 predictedAngularDelta(0.0f);
+        if (dynamicBody) {
+            predictedLinearDelta =
+                m_feedbackForce / m_body->mass * dt;
+            predictedAngularDelta =
+                m_body->GetInertiaWorldInv() * m_feedbackTorque * dt;
         }
 
-        applyRigidBodyFeedback(boundarySamples, dt);
+        wallSeparationKktResidual = 0.0f;
+        for (WallFace const & wallFace : wallFaces) {
+            if (! wallFace.Candidate)
+                continue;
+
+            float const q = boundaryPressure(wallFace);
+            float const boundaryVelocity =
+                intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
+                + wallFace.DivergenceSign
+                    * wallFace.GhostScale
+                    * (float(pressure[wallFace.Row]) - q);
+            float finalWallVelocity = wallFace.WallVelocity;
+            if (dynamicBody && wallFace.BodyBoundary) {
+                glm::ivec3 const face = decodeCell(wallFace.FaceIndex);
+                glm::vec3 const lever =
+                    faceCenter(face, wallFace.Direction) - m_body->position;
+                finalWallVelocity += (
+                    predictedLinearDelta
+                    + glm::cross(predictedAngularDelta, lever))
+                                         [wallFace.Direction];
+            }
+            float const separationSpeed =
+                -wallFace.DivergenceSign
+                * (boundaryVelocity - finalWallVelocity);
+            float violation = std::max(-q, 0.0f);
+            if (q > 1e-6f)
+                violation = std::max(violation, std::abs(separationSpeed));
+            else
+                violation = std::max(
+                    violation,
+                    std::max(-separationSpeed, 0.0f));
+            violation = std::max(
+                violation,
+                std::abs(q * separationSpeed));
+            wallSeparationKktResidual =
+                std::max(wallSeparationKktResidual, violation);
+        }
+        for (int index = 0; index < candidateCount; ++index) {
+            float violation =
+                float(std::max(-candidatePressure[index], 0.0));
+            if (candidatePressure[index] > 1e-7)
+                violation = std::max(
+                    violation,
+                    float(std::abs(reducedGradient[index])));
+            else
+                violation = std::max(
+                    violation,
+                    float(std::max(-reducedGradient[index], 0.0)));
+            wallSeparationKktResidual =
+                std::max(wallSeparationKktResidual, violation);
+        }
+
+        pressureSolveSucceeded =
+            std::isfinite(pressureResidual)
+            && pressureResidual < 2e-4f
+            && wallSeparationKktResidual < 2e-4f;
     }
 
     void VariationalCoupledSimulator::applyRigidBodyFeedback(
@@ -645,26 +954,25 @@ namespace VCX::Labs::Final {
             if (! sample.Contact || sample.BoundaryWeight <= 1e-6f)
                 continue;
 
-            float const pressure = m_p[sample.PressureCell];
-            if (pressure <= 0.0f)
-                continue;
-
             glm::ivec3 const face {
                 sample.FaceIndex % m_iCellX,
                 (sample.FaceIndex / m_iCellX) % m_iCellY,
                 sample.FaceIndex / (m_iCellX * m_iCellY),
             };
-            glm::vec3 const applicationPoint = faceCenter(face, sample.Direction);
-            glm::vec3       forceDirection(0.0f);
+            glm::vec3 const applicationPoint =
+                faceCenter(face, sample.Direction);
+            glm::vec3 forceDirection(0.0f);
             forceDirection[sample.Direction] = sample.DivergenceSign;
-            // The solved pressure is a velocity correction. Converting it
-            // back to a rigid-body force requires one fluid cell mass.
             float const impulseScale =
                 sample.BoundaryWeight * m_h * m_h * m_h;
             glm::vec3 const force =
-                forceDirection * pressure * impulseScale * invDt;
+                forceDirection
+                * sample.BoundaryPressure
+                * impulseScale
+                * invDt;
             m_feedbackForce += force;
-            m_feedbackTorque += glm::cross(applicationPoint - m_body->position, force);
+            m_feedbackTorque +=
+                glm::cross(applicationPoint - m_body->position, force);
         }
     }
 } // namespace VCX::Labs::Final

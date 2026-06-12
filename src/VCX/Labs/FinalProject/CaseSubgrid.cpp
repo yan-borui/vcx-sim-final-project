@@ -1,11 +1,10 @@
 #include "Labs/FinalProject/CaseSubgrid.h"
 
 #include "Engine/app.h"
+#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     namespace {
-        constexpr std::uint32_t SubgridPassConstantsBinding = 2;
-
         const std::vector<glm::vec3> BoundaryVertices = {
             { -0.5f, -0.5f, -0.5f },
             {  0.5f, -0.5f, -0.5f },
@@ -150,6 +149,7 @@ namespace VCX::Labs::FluidSimulation {
 
         _lineProgram.GetUniforms().SetByName("u_Projection", projection);
         _lineProgram.GetUniforms().SetByName("u_View", view);
+        _lineProgram.GetUniforms().SetByName("u_Model", glm::mat4(1.0f));
         _lineProgram.GetUniforms().SetByName("u_Color", glm::vec3(1.0f));
         glLineWidth(_boundaryWidth);
         _boundaryItem.Draw({ _lineProgram.Use() });
@@ -157,6 +157,8 @@ namespace VCX::Labs::FluidSimulation {
 
         Rendering::ModelObject particles(
             _sphere, _simulation.m_particlePos, _simulation.m_particleColor);
+        _program.GetUniforms().SetByName("u_FluidProjection", projection);
+        _program.GetUniforms().SetByName("u_FluidView", view);
         particles.Mesh.Draw(
             { _program.Use() },
             _sphere.Mesh.Indices.size(),
@@ -168,7 +170,8 @@ namespace VCX::Labs::FluidSimulation {
             * glm::mat4_cast(_body.orientation)
             * glm::scale(glm::mat4(1.0f), _body.dim);
         _flatProgram.GetUniforms().SetByName("u_Projection", projection);
-        _flatProgram.GetUniforms().SetByName("u_View", view * bodyModel);
+        _flatProgram.GetUniforms().SetByName("u_View", view);
+        _flatProgram.GetUniforms().SetByName("u_Model", bodyModel);
         _flatProgram.GetUniforms().SetByName("u_Color", _body.color);
         _rigidBodyItem.Draw({ _flatProgram.Use() });
 

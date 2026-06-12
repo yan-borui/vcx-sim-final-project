@@ -130,9 +130,12 @@ namespace VCX::Labs::Final {
         _cameraManager.Update(_camera);
         _program.GetUniforms().SetByName("u_Projection", _camera.GetProjectionMatrix(float(desiredSize.first) / desiredSize.second));
         _program.GetUniforms().SetByName("u_View", _camera.GetViewMatrix());
+        _program.GetUniforms().SetByName("u_Model", glm::mat4(1.0f));
 
         gl_using(_frame);
         glEnable(GL_DEPTH_TEST);
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // ── fluid particles as small octahedra ──
         _verts.clear();

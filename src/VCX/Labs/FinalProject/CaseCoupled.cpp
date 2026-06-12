@@ -8,6 +8,7 @@
 #include "Engine/app.h"
 #include "Labs/Common/ImGuiHelper.h"
 #include "Labs/FinalProject/CaseCoupled.h"
+#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     const std::vector<glm::vec3> vertex_pos = {
@@ -48,7 +49,7 @@ namespace VCX::Labs::FluidSimulation {
                 Engine::GL::DrawFrequency::Static,
                 0),
             Engine::GL::PrimitiveType::Triangles),
-        _sceneObject(1),
+        _sceneObject(CoupledPassConstantsBinding),
         _BoundaryItem(
             Engine::GL::VertexLayout().Add<glm::vec3>(
                 "position",
@@ -57,8 +58,12 @@ namespace VCX::Labs::FluidSimulation {
             Engine::GL::PrimitiveType::Lines) {
         _cameraManager.AutoRotate = false;
 
-        _program.BindUniformBlock("PassConstants", 1);
-        _lineprogram.BindUniformBlock("PassConstants", 1);
+        _program.BindUniformBlock(
+            "PassConstants",
+            CoupledPassConstantsBinding);
+        _lineprogram.BindUniformBlock(
+            "PassConstants",
+            CoupledPassConstantsBinding);
 
         _program.GetUniforms().SetByName("u_DiffuseMap", 0);
         _program.GetUniforms().SetByName("u_SpecularMap", 1);
@@ -137,6 +142,10 @@ namespace VCX::Labs::FluidSimulation {
             ImGui::Checkbox("Sub-grid weights", &_simulation.useSubgridWeights);
             ImGui::Checkbox("Wall separation", &_simulation.enableWallSeparation);
             ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
+            ImGui::Text(
+                "Wall KKT: %.3e (%d QP steps)",
+                _simulation.wallSeparationKktResidual,
+                _simulation.wallSeparationIterations);
         } else if (_useAPIC) {
             ImGui::Text("APIC transfer with current rigid boundary");
         } else if (_useCG) {

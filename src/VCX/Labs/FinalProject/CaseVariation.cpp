@@ -1,6 +1,7 @@
 #include <spdlog/spdlog.h>
 #include "Engine/app.h"
 #include "Labs/FinalProject/CaseVariation.h"
+#include "Labs/FinalProject/RenderBindings.h"
 #include "Labs/Common/ImGuiHelper.h"
 #include <iostream>
 
@@ -35,13 +36,17 @@ namespace VCX::Labs::FluidSimulation {
             Engine::GL::VertexLayout().Add<glm::vec3>("position", 
                 Engine::GL::DrawFrequency::Stream , 0), 
                 Engine::GL::PrimitiveType::Triangles),
-        _sceneObject(1),
+        _sceneObject(VariationPassConstantsBinding),
         _BoundaryItem(Engine::GL::VertexLayout()
             .Add<glm::vec3>("position", Engine::GL::DrawFrequency::Stream , 0), Engine::GL::PrimitiveType::Lines){ 
         _cameraManager.AutoRotate = false;
 
-        _program.BindUniformBlock("PassConstants", 1);
-        _lineprogram.BindUniformBlock("PassConstants", 1);
+        _program.BindUniformBlock(
+            "PassConstants",
+            VariationPassConstantsBinding);
+        _lineprogram.BindUniformBlock(
+            "PassConstants",
+            VariationPassConstantsBinding);
 
         _program.GetUniforms().SetByName("u_DiffuseMap" , 0);
         _program.GetUniforms().SetByName("u_SpecularMap", 1);

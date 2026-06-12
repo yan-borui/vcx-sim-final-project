@@ -12,6 +12,7 @@ namespace VCX::Labs::Final {
         int   wallContactParticles              = 0;
         float minimumContactPressure            = 0.0f;
         float pressureResidual                  = 0.0f;
+        float wallSeparationKktResidual         = 0.0f;
         float averageLeftWallDistance           = 0.0f;
         bool  highlightWallContact              = true;
 
