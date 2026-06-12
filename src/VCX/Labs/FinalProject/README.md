@@ -8,7 +8,8 @@ Simulator (基类，在 FluidSimulator.h/cpp)
 ├── CGSimulator       (在 CGSimulator.h/cpp)
 ├── SubgridSimulator  (在 SubgridSimulator.h/cpp)
 ├── FreeSurfaceSeparationSimulator (在 FreeSurfaceSeparationSimulator.h/cpp)
-└── VariationalCoupledSimulator (在 VariationalCoupledSimulator.h/cpp)
+├── VariationalCoupledSimulator (在 VariationalCoupledSimulator.h/cpp)
+└── VariationalSimulator (在 VariationalSimulator.h/cpp)
 
 RigidBody (独立结构体，在 RigidBody.h)
 
@@ -32,27 +33,6 @@ CaseFluid (UI/主循环，在 CaseCoupled.h/cpp)
 | **tests/SimulatorTests.cpp** | 子网格、自然分离和双向耦合的数值回归测试 |
 
 ---
-
-
-## 核心算法流程
-```
-void SimulateTimestep(float const dt) {
-    float sdt = dt / numSubSteps;
-
-    for (int step = 0; step < numSubSteps; step++) {
-        integrateParticles(sdt);
-        handleParticleCollisions();
-        if (separateParticles)
-            pushParticlesApart(numParticleIters);
-        handleParticleCollisions();
-        transferVelocities(true, m_fRatio);
-        updateParticleDensity();
-        solveIncompressibility(numPressureIters, sdt, overRelaxation, compensateDrift);
-        transferVelocities(false, m_fRatio);
-    }
-    updateParticleColors();
-}
-```
 
 ## 子网格精度流动
 
