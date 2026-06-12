@@ -3,6 +3,8 @@
 namespace VCX::Labs::Final {
     void APICSimulator::transferVelocities(bool toGrid, float flipRatio) {
         if (toGrid) {
+            rebuildSolidCellsFromBody();
+
             std::fill(m_vel.begin(), m_vel.end(), glm::vec3(0.0f));
             for (int i = 0; i < 3; i++) {
                 std::fill(m_near_num[i].begin(), m_near_num[i].end(), 0.0f);
@@ -13,7 +15,6 @@ namespace VCX::Labs::Final {
             }
         }
 
-        // 遍历所有粒子
         for (int p = 0; p < m_iNumSpheres; p++) {
             glm::vec3 xp = m_particlePos[p];
             glm::mat3 cp = m_particleC[p];
@@ -24,11 +25,10 @@ namespace VCX::Labs::Final {
             int centerIdx = index2GridOffset(cellIndex);
             if (centerIdx >= 0 && centerIdx < m_iNumCells && m_type[centerIdx] == EMPTY_CELL) m_type[centerIdx] = FLUID_CELL;   
 
-            // 对X，Y，Z三个方向分别处理
+            // 瀵筙锛孻锛孼涓変釜鏂瑰悜鍒嗗埆澶勭悊
             for (int dir = 0; dir < 3; dir++) {
                 glm::vec3 offset = glm::vec3(0.5f);
-                offset[dir] = 0.0f; // 只在当前方向上偏移
-
+                offset[dir] = 0.0f; // 鍙湪褰撳墠鏂瑰悜涓婂亸绉?
                 glm::vec3 f_idx = (xp + glm::vec3(0.5f) - offset * m_h) * m_fInvSpacing;
                 glm::ivec3 baseIdx = glm::ivec3(floor(f_idx));
                 glm::vec3 delta = f_idx - glm::vec3(baseIdx);
@@ -52,11 +52,10 @@ namespace VCX::Labs::Final {
                 };
 
                 if (toGrid) {
-                    // P2G: 粒子到网格
                     for (int n = 0; n < 8; n++) {
                         int gIdx = index2GridOffset(neighbor[n]);
-                        glm::vec3 xi_xp = (glm::vec3(neighbor[n]) + offset) * m_h - posRelGrid; // 网格点到粒子位置的向量
-                        float velocityContribution = vp[dir] + glm::dot(cp[dir], xi_xp); // APIC 速度贡献
+                        glm::vec3 xi_xp = (glm::vec3(neighbor[n]) + offset) * m_h - posRelGrid;
+                        float velocityContribution = vp[dir] + glm::dot(cp[dir], xi_xp);
                         
                         if (gIdx >= 0 && gIdx < m_iNumCells) {
                             m_vel[gIdx][dir] += w[n] * velocityContribution;
@@ -64,14 +63,12 @@ namespace VCX::Labs::Final {
                         }
                     }
                 } else {
-                    // G2P: 网格到粒子
                     float newV_dir = 0.0f;
                     glm::vec3 newC_dir(0.0f);
 
                     for (int n = 0; n < 8; n++) {
                         int gIdx = index2GridOffset(neighbor[n]);
-                        glm::vec3 xi_xp = (glm::vec3(neighbor[n]) + offset) * m_h - posRelGrid; // 网格点到粒子位置的向量
-                        
+                        glm::vec3 xi_xp = (glm::vec3(neighbor[n]) + offset) * m_h - posRelGrid;
                         if (gIdx >= 0 && gIdx < m_iNumCells) {
                             float v_g = m_vel[gIdx][dir];
                             newV_dir += w[n] * v_g;
@@ -79,26 +76,26 @@ namespace VCX::Labs::Final {
                         }
                     }
 
-                    m_particleVel[p][dir] = newV_dir; // 更新粒子速度
-                    m_particleC[p][dir] = newC_dir * (4.0f * m_fInvSpacing * m_fInvSpacing); // 更新 APIC C
+                    m_particleVel[p][dir] = newV_dir; // 鏇存柊绮掑瓙閫熷害
+                    m_particleC[p][dir] = newC_dir * (4.0f * m_fInvSpacing * m_fInvSpacing); // 鏇存柊 APIC C
                 }
             }
         }
 
         if (toGrid) {
-            // 归一化网格速度
+            // 褰掍竴鍖栫綉鏍奸€熷害
             for (int i = 0; i < m_iNumCells; i++) {
                 for (int dir = 0; dir < 3; dir++) {
                     if (m_near_num[dir][i] > 0.0f) {
                         if (isValidVelocity(i % m_iCellX, (i / m_iCellX) % m_iCellY, i / (m_iCellX * m_iCellY), dir)) {
                             m_vel[i][dir] /= m_near_num[dir][i];
                         } else {
-                            m_vel[i][dir] = 0.0f; // 没有有效流体邻居，速度设为0
+                            m_vel[i][dir] = 0.0f; // 娌℃湁鏈夋晥娴佷綋閭诲眳锛岄€熷害璁句负0
                         }
                     }
                 }
             }
-            m_pre_vel = m_vel; // 保存当前网格速度用于下一次计算v_delta
+            m_pre_vel = m_vel; // 淇濆瓨褰撳墠缃戞牸閫熷害鐢ㄤ簬涓嬩竴娆¤绠梫_delta
         }
     }
 
