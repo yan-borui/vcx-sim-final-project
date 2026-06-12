@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -7,7 +8,6 @@
 #include "Engine/app.h"
 #include "Labs/Common/ImGuiHelper.h"
 #include "Labs/FinalProject/CaseCoupled.h"
-#include "Labs/FinalProject/RenderBindings.h"
 
 namespace VCX::Labs::FluidSimulation {
     const std::vector<glm::vec3> vertex_pos = {
@@ -42,7 +42,13 @@ namespace VCX::Labs::FluidSimulation {
                 Engine::GL::DrawFrequency::Stream,
                 0),
             Engine::GL::PrimitiveType::Triangles),
-        _sceneObject(CoupledPassConstantsBinding),
+        _MeshBodyItem(
+            Engine::GL::VertexLayout().Add<glm::vec3>(
+                "position",
+                Engine::GL::DrawFrequency::Static,
+                0),
+            Engine::GL::PrimitiveType::Triangles),
+        _sceneObject(1),
         _BoundaryItem(
             Engine::GL::VertexLayout().Add<glm::vec3>(
                 "position",
@@ -51,12 +57,8 @@ namespace VCX::Labs::FluidSimulation {
             Engine::GL::PrimitiveType::Lines) {
         _cameraManager.AutoRotate = false;
 
-        _program.BindUniformBlock(
-            "PassConstants",
-            CoupledPassConstantsBinding);
-        _lineprogram.BindUniformBlock(
-            "PassConstants",
-            CoupledPassConstantsBinding);
+        _program.BindUniformBlock("PassConstants", 1);
+        _lineprogram.BindUniformBlock("PassConstants", 1);
 
         _program.GetUniforms().SetByName("u_DiffuseMap", 0);
         _program.GetUniforms().SetByName("u_SpecularMap", 1);
@@ -85,8 +87,19 @@ namespace VCX::Labs::FluidSimulation {
         ResetSystem();
     }
 
-    void CaseFluid::LoadBunnyIfNeeded() {
-        // No-op now. Bunny is analytic/internal.
+    void CaseFluid::LoadMeshIfNeeded() {
+        if (_meshReady)
+            return;
+
+        auto mesh = Engine::LoadSurfaceMesh("assets/models/suzanne.obj", true);
+        mesh.NormalizePositions();
+        _MeshBodyItem.UpdateElementBuffer(mesh.Indices);
+        _MeshBodyItem.UpdateVertexBuffer("position", Engine::make_span_bytes<glm::vec3>(mesh.Positions));
+
+        _meshSDF = std::make_shared<Final::MeshSDF>();
+        _meshReady = _meshSDF->LoadOBJ("assets/models/suzanne.obj");
+        if (! _meshReady)
+            spdlog::warn("Failed to load assets/models/suzanne.obj for irregular solid SDF.");
     }
 
     void CaseFluid::OnSetupPropsUI() {
@@ -112,7 +125,7 @@ namespace VCX::Labs::FluidSimulation {
             ResetSystem();
 
         int          shapeMode    = static_cast<int>(_demoShape);
-        const char * shapeModes[] = { "Box", "Sphere", "Bunny" };
+        const char * shapeModes[] = { "Box", "Sphere", "suzanne" };
         if (ImGui::Combo("Rigid Shape", &shapeMode, shapeModes, IM_ARRAYSIZE(shapeModes))) {
             _demoShape = static_cast<DemoShape>(shapeMode);
             ResetSystem();
@@ -124,10 +137,14 @@ namespace VCX::Labs::FluidSimulation {
             ImGui::Checkbox("Sub-grid weights", &_simulation.useSubgridWeights);
             ImGui::Checkbox("Wall separation", &_simulation.enableWallSeparation);
             ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
-            ImGui::Text(
-                "Wall KKT: %.3e (%d QP steps)",
-                _simulation.wallSeparationKktResidual,
-                _simulation.wallSeparationIterations);
+        } else if (_useAPIC) {
+            ImGui::Text("APIC transfer with current rigid boundary");
+        } else if (_useCG) {
+            ImGui::Text("CG pressure projection with current rigid boundary");
+        }
+
+        if (_demoShape == DemoShape::Mesh) {
+            ImGui::Text("Irregular solid: suzanne.obj %s", _meshReady ? "loaded" : "pending");
         }
 
         if (ImGui::SliderInt("Grid Resolution", &_res, 10, 24))
@@ -196,6 +213,27 @@ namespace VCX::Labs::FluidSimulation {
                 _sim->m_feedbackForce / std::max(_body.mass, 1e-6f) * _dt;
             _body.angularVelocity +=
                 _body.GetInertiaWorldInv() * _sim->m_feedbackTorque * _dt;
+
+            if (_useCG && _body.shape == Final::RigidBody::ShapeType::Mesh) {
+                if (! std::isfinite(_body.velocity.x)
+                    || ! std::isfinite(_body.velocity.y)
+                    || ! std::isfinite(_body.velocity.z))
+                    _body.velocity = glm::vec3(0.0f);
+                if (! std::isfinite(_body.angularVelocity.x)
+                    || ! std::isfinite(_body.angularVelocity.y)
+                    || ! std::isfinite(_body.angularVelocity.z))
+                    _body.angularVelocity = glm::vec3(0.0f);
+
+                float const maxSpeed = 4.0f;
+                float const speed    = glm::length(_body.velocity);
+                if (speed > maxSpeed)
+                    _body.velocity *= maxSpeed / speed;
+
+                float const maxAngularSpeed = 20.0f;
+                float const angularSpeed    = glm::length(_body.angularVelocity);
+                if (angularSpeed > maxAngularSpeed)
+                    _body.angularVelocity *= maxAngularSpeed / angularSpeed;
+            }
         }
 
         _frame.Resize(desiredSize);
@@ -234,6 +272,8 @@ namespace VCX::Labs::FluidSimulation {
 
         Rendering::ModelObject fluidParticles = Rendering::ModelObject(_sphere, _sim->m_particlePos, _sim->m_particleColor);
         auto const &           material       = _sceneObject.Materials[0];
+        _program.GetUniforms().SetByName("u_FluidProjection", proj);
+        _program.GetUniforms().SetByName("u_FluidView", view);
         fluidParticles.Mesh.Draw(
             { material.Albedo.Use(), material.MetaSpec.Use(), material.Height.Use(), _program.Use() },
             _sphere.Mesh.Indices.size(),
@@ -246,7 +286,8 @@ namespace VCX::Labs::FluidSimulation {
 
         _flatProgram.GetUniforms().SetByName("u_Projection", proj);
         _flatProgram.GetUniforms().SetByName("u_Color", _body.color);
-        _flatProgram.GetUniforms().SetByName("u_View", view * bodyModel);
+        _flatProgram.GetUniforms().SetByName("u_View", view);
+        _flatProgram.GetUniforms().SetByName("u_Model", bodyModel);
 
         if (_body.shape == Final::RigidBody::ShapeType::Sphere) {
             Rendering::ModelObject rigidSphere = Rendering::ModelObject(_rigidSphere, std::vector<glm::vec3> { glm::vec3(0.0f) });
@@ -255,8 +296,9 @@ namespace VCX::Labs::FluidSimulation {
                 _rigidSphere.Mesh.Indices.size(),
                 0,
                 1);
+        } else if (_body.shape == Final::RigidBody::ShapeType::Mesh && _meshReady) {
+            _MeshBodyItem.Draw({ _flatProgram.Use() });
         } else {
-            // Box and BunnyLike both use box placeholder rendering.
             _RigidBodyItem.Draw({ _flatProgram.Use() });
         }
 
@@ -292,8 +334,7 @@ namespace VCX::Labs::FluidSimulation {
                 float     strength = 0.002f;
                 glm::vec3 move     = (right * delta.x - up * delta.y) * strength;
 
-                _body.position += move;
-                _body.velocity = move / std::max(Engine::GetDeltaTime(), 0.001f);
+                _body.velocity += move / std::max(Engine::GetDeltaTime(), 0.001f);
             } else {
                 _body.velocity = glm::vec3(0.0f);
             }
@@ -311,15 +352,20 @@ namespace VCX::Labs::FluidSimulation {
 
         _sim->setupScene(_res);
 
-        if (_demoShape == DemoShape::Bunny) {
+        if (_demoShape == DemoShape::Mesh) {
+            LoadMeshIfNeeded();
+            _simulation.volumeSamplesPerAxis = 2;
             _body.Reset(
-                { 0.0f, 0.20f, 0.0f },
+                { 0.0f, 0.32f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
-                { 0.32f, 0.32f, 0.32f },
+                { 0.36f, 0.36f, 0.36f },
                 0.35f,
                 { 0.90f, 0.82f, 0.62f },
-                Final::RigidBody::ShapeType::Bunny);
+                Final::RigidBody::ShapeType::Mesh);
+            if (_meshReady)
+                _body.SetMeshSDF(_meshSDF);
         } else if (_demoShape == DemoShape::Sphere) {
+            _simulation.volumeSamplesPerAxis = 4;
             _body.Reset(
                 { 0.0f, 0.26f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
@@ -328,6 +374,7 @@ namespace VCX::Labs::FluidSimulation {
                 { 0.92f, 0.58f, 0.20f },
                 Final::RigidBody::ShapeType::Sphere);
         } else {
+            _simulation.volumeSamplesPerAxis = 4;
             _body.Reset(
                 { 0.0f, 0.30f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
