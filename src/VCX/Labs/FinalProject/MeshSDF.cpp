@@ -11,6 +11,10 @@
 namespace VCX::Labs::Final {
 
     namespace {
+        float MaxComponent(glm::vec3 const & v) {
+            return std::max(v.x, std::max(v.y, v.z));
+        }
+
         glm::vec3 ClosestPointOnTriangle(
             glm::vec3 const & p,
             glm::vec3 const & a,
@@ -90,6 +94,8 @@ namespace VCX::Labs::Final {
         auto const & shapes = reader.GetShapes();
 
         _triangles.clear();
+        _minBounds = glm::vec3(std::numeric_limits<float>::max());
+        _maxBounds = glm::vec3(std::numeric_limits<float>::lowest());
 
         for (auto const & shape : shapes) {
             size_t indexOffset = 0;
@@ -108,6 +114,8 @@ namespace VCX::Labs::Final {
                         attrib.vertices[3 * vi + 0],
                         attrib.vertices[3 * vi + 1],
                         attrib.vertices[3 * vi + 2]);
+                    _minBounds = glm::min(_minBounds, verts[v]);
+                    _maxBounds = glm::max(_maxBounds, verts[v]);
                 }
 
                 _triangles.push_back({ verts[0], verts[1], verts[2] });
@@ -115,10 +123,26 @@ namespace VCX::Labs::Final {
             }
         }
 
-        std::cout << "MeshSDF loaded triangles: " << _triangles.size()
-                  << " from " << filePath << std::endl;
+        if (_triangles.empty())
+            return false;
 
-        return ! _triangles.empty();
+        glm::vec3 const center = 0.5f * (_minBounds + _maxBounds);
+        float const     scale  =
+            1.0f / std::max(MaxComponent(_maxBounds - _minBounds), 1e-6f);
+
+        _minBounds = glm::vec3(std::numeric_limits<float>::max());
+        _maxBounds = glm::vec3(std::numeric_limits<float>::lowest());
+        for (MeshTriangle & tri : _triangles) {
+            tri.a = (tri.a - center) * scale;
+            tri.b = (tri.b - center) * scale;
+            tri.c = (tri.c - center) * scale;
+            _minBounds = glm::min(_minBounds, glm::min(tri.a, glm::min(tri.b, tri.c)));
+            _maxBounds = glm::max(_maxBounds, glm::max(tri.a, glm::max(tri.b, tri.c)));
+        }
+
+        BuildDistanceGrid();
+
+        return true;
     }
 
     float MeshSDF::PointTriangleDistance(glm::vec3 const & p, MeshTriangle const & tri) {
@@ -165,7 +189,16 @@ namespace VCX::Labs::Final {
         return (intersections & 1) == 1;
     }
 
-    float MeshSDF::SignedDistance(glm::vec3 const & localPoint) const {
+    int MeshSDF::GridOffset(int x, int y, int z) const {
+        return x + _gridResolution * (y + _gridResolution * z);
+    }
+
+    float MeshSDF::OutsideBoundsDistance(glm::vec3 const & localPoint) const {
+        glm::vec3 const closest = glm::clamp(localPoint, _gridMin, _gridMax);
+        return glm::length(localPoint - closest);
+    }
+
+    float MeshSDF::ExactSignedDistance(glm::vec3 const & localPoint) const {
         if (_triangles.empty())
             return std::numeric_limits<float>::max();
 
@@ -174,6 +207,61 @@ namespace VCX::Labs::Final {
             minDist = std::min(minDist, PointTriangleDistance(localPoint, tri));
 
         return IsInside(localPoint) ? -minDist : minDist;
+    }
+
+    void MeshSDF::BuildDistanceGrid() {
+        _gridResolution = 32;
+        _gridMin        = _minBounds - glm::vec3(0.08f);
+        _gridMax        = _maxBounds + glm::vec3(0.08f);
+        _gridDx         = (_gridMax - _gridMin) / float(_gridResolution - 1);
+        _distanceGrid.assign(
+            _gridResolution * _gridResolution * _gridResolution,
+            std::numeric_limits<float>::max());
+
+        for (int z = 0; z < _gridResolution; ++z) {
+            for (int y = 0; y < _gridResolution; ++y) {
+                for (int x = 0; x < _gridResolution; ++x) {
+                    glm::vec3 const p =
+                        _gridMin + glm::vec3(x, y, z) * _gridDx;
+                    _distanceGrid[GridOffset(x, y, z)] = ExactSignedDistance(p);
+                }
+            }
+        }
+    }
+
+    float MeshSDF::SignedDistance(glm::vec3 const & localPoint) const {
+        if (_triangles.empty())
+            return std::numeric_limits<float>::max();
+
+        if (_distanceGrid.empty()
+            || localPoint.x < _gridMin.x || localPoint.x > _gridMax.x
+            || localPoint.y < _gridMin.y || localPoint.y > _gridMax.y
+            || localPoint.z < _gridMin.z || localPoint.z > _gridMax.z) {
+            return OutsideBoundsDistance(localPoint);
+        }
+
+        glm::vec3 const gridCoord =
+            (localPoint - _gridMin) / glm::max(_gridDx, glm::vec3(1e-6f));
+        glm::ivec3 const base = glm::clamp(
+            glm::ivec3(glm::floor(gridCoord)),
+            glm::ivec3(0),
+            glm::ivec3(_gridResolution - 2));
+        glm::vec3 const frac = glm::clamp(
+            gridCoord - glm::vec3(base),
+            glm::vec3(0.0f),
+            glm::vec3(1.0f));
+
+        auto sample = [&](int dx, int dy, int dz) {
+            return _distanceGrid[GridOffset(base.x + dx, base.y + dy, base.z + dz)];
+        };
+
+        float const c00 = glm::mix(sample(0, 0, 0), sample(1, 0, 0), frac.x);
+        float const c10 = glm::mix(sample(0, 1, 0), sample(1, 1, 0), frac.x);
+        float const c01 = glm::mix(sample(0, 0, 1), sample(1, 0, 1), frac.x);
+        float const c11 = glm::mix(sample(0, 1, 1), sample(1, 1, 1), frac.x);
+        float const c0  = glm::mix(c00, c10, frac.y);
+        float const c1  = glm::mix(c01, c11, frac.y);
+        return glm::mix(c0, c1, frac.z);
     }
 
 } // namespace VCX::Labs::Final
