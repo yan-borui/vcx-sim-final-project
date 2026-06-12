@@ -93,6 +93,10 @@ namespace VCX::Labs::FluidSimulation {
 
         ImGui::Text("Cut faces: %d", _simulation.partiallyOpenFaceCount);
         ImGui::Text("Min fraction: %.3f", _simulation.minimumOpenFaceFraction);
+        ImGui::Text(
+            "Partially filled faces: %d",
+            _simulation.partiallyFilledFaceCount);
+        ImGui::Text("Min fluid mass: %.3f", _simulation.minimumFluidMassFraction);
         ImGui::Text("Pressure residual: %.3e", _simulation.pressureResidual);
 
         ImGui::Spacing();

@@ -6,13 +6,16 @@
 
 namespace VCX::Labs::Final {
     struct VariationalCoupledSimulator : public Simulator {
-        bool  useSubgridWeights          = true;
-        bool  enableWallSeparation       = true;
-        int   volumeSamplesPerAxis       = 4;
-        float pressureResidual           = 0.0f;
-        float wallSeparationKktResidual  = 0.0f;
-        int   wallSeparationIterations   = 0;
-        bool  pressureSolveSucceeded     = true;
+        bool  useSubgridWeights           = true;
+        bool  enableWallSeparation        = true;
+        int   volumeSamplesPerAxis        = 4;
+        float pressureResidual            = 0.0f;
+        float wallSeparationKktResidual   = 0.0f;
+        float wallSeparationQpResidual    = 0.0f;
+        float wallSeparationSpeedResidual = 0.0f;
+        float maximumBoundaryPressure     = 0.0f;
+        int   wallSeparationIterations    = 0;
+        bool  pressureSolveSucceeded      = true;
 
         void setupScene(int res) override;
         void solveIncompressibility(
@@ -31,6 +34,7 @@ namespace VCX::Labs::Final {
             bool  Contact;
         };
 
+        std::array<std::vector<float>, 3> _faceOpenFraction;
         std::array<std::vector<float>, 3> _faceFluidFraction;
 
         bool      isValidCell(glm::ivec3 const & cell) const;
@@ -42,7 +46,10 @@ namespace VCX::Labs::Final {
         bool      hasFluidSupportAcrossOpenFace(glm::ivec3 const & cell) const;
         bool      isPressureUnknownCell(glm::ivec3 const & cell) const;
         bool      isWallSeparationCandidate(glm::ivec3 const & cell) const;
-        float     estimateFaceFluidFraction(glm::ivec3 const & face, int dir) const;
+        glm::vec2 estimateFaceFractions(
+            glm::ivec3 const &         face,
+            int                        dir,
+            std::vector<float> const & liquidLevelSet) const;
         float     faceWeight(int dir, int faceIdx) const;
         float     wallGhostPressureScale(
             glm::ivec3 const & cell,
@@ -51,7 +58,7 @@ namespace VCX::Labs::Final {
             bool               bodyBoundary) const;
         float     solidVelocity(glm::ivec3 const & face, int dir, glm::ivec3 const & solidCell) const;
 
-        void updateFaceFluidFractions();
+        void updateFaceFluidFractions(std::vector<float> const & liquidLevelSet);
         void applyRigidBodyFeedback(
             std::vector<BoundaryPressureSample> const & boundarySamples,
             float                                      dt);

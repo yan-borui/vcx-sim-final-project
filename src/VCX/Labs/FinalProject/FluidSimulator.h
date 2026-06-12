@@ -78,6 +78,9 @@ namespace VCX::Labs::Final {
         void handleParticleCollisions();
         void updateParticleDensity();
         std::vector<float> buildParticleLevelSet() const;
+        float sampleCellCenteredField(
+            std::vector<float> const & field,
+            glm::vec3 const &         position) const;
         float ghostFluidPressureScale(
             std::vector<float> const & levelSet,
             int                        fluidCell,

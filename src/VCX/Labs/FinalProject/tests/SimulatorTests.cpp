@@ -49,8 +49,10 @@ namespace {
         float MaxBodySpeed       = 0.0f;
         float MaxAngularSpeed    = 0.0f;
         float MaxParticleSpeed   = 0.0f;
+        float MaxParticleHeight  = 0.0f;
         float MaxFeedbackImpulse = 0.0f;
         int    MaxKktSolves      = 0;
+        int    LargeSplashFrames = 0;
     };
 
     CoupledScenarioMetrics runDefaultCoupledScenario(int frameCount) {
@@ -97,7 +99,23 @@ namespace {
             body.velocity += glm::vec3(0.0f, -9.81f, 0.0f) * dt;
 
             simulation.SimulateTimestep(dt);
-            require(simulation.pressureSolveSucceeded, "default coupled pressure solve failed");
+            if (! simulation.pressureSolveSucceeded) {
+                throw std::runtime_error(
+                    "default coupled pressure solve failed at frame "
+                    + std::to_string(frame)
+                    + ", pressure residual "
+                    + std::to_string(simulation.pressureResidual)
+                    + ", KKT residual "
+                    + std::to_string(simulation.wallSeparationKktResidual)
+                    + ", speed KKT "
+                    + std::to_string(simulation.wallSeparationSpeedResidual)
+                    + ", QP KKT "
+                    + std::to_string(simulation.wallSeparationQpResidual)
+                    + ", max boundary pressure "
+                    + std::to_string(simulation.maximumBoundaryPressure)
+                    + ", QP sweeps "
+                    + std::to_string(simulation.wallSeparationIterations));
+            }
 
             body.velocity += simulation.m_feedbackForce / body.mass * dt;
             body.angularVelocity +=
@@ -116,6 +134,16 @@ namespace {
             for (glm::vec3 const velocity : simulation.m_particleVel)
                 metrics.MaxParticleSpeed =
                     std::max(metrics.MaxParticleSpeed, glm::length(velocity));
+            int highParticleCount = 0;
+            for (glm::vec3 const position : simulation.m_particlePos) {
+                metrics.MaxParticleHeight =
+                    std::max(metrics.MaxParticleHeight, position.y);
+                if (position.y > 0.35f)
+                    ++highParticleCount;
+            }
+            if (highParticleCount
+                > std::max(8, simulation.m_iNumSpheres / 10))
+                ++metrics.LargeSplashFrames;
 
             require(isFinite(body.position), "default coupled body position is not finite");
             require(isFinite(body.velocity), "default coupled body velocity is not finite");
@@ -125,6 +153,50 @@ namespace {
                     simulation.m_particlePos.end(),
                     isFinite),
                 "default coupled particle position is not finite");
+        }
+        return metrics;
+    }
+
+    struct FreeSurfaceScenarioMetrics {
+        float MaxParticleSpeed  = 0.0f;
+        float MaxParticleHeight = 0.0f;
+        int   LargeSplashFrames = 0;
+    };
+
+    FreeSurfaceScenarioMetrics runFreeSurfaceScenario(int frameCount) {
+        FreeSurfaceSeparationSimulator simulation;
+        simulation.setupScene(16);
+        simulation.enableWallSeparation = true;
+
+        FreeSurfaceScenarioMetrics metrics;
+        for (int frame = 0; frame < frameCount; ++frame) {
+            simulation.SimulateTimestep(0.008f);
+            if (! std::isfinite(simulation.pressureResidual)
+                || simulation.pressureResidual >= 2e-4f
+                || simulation.wallSeparationKktResidual >= 2e-4f) {
+                throw std::runtime_error(
+                    "free-surface long run failed at frame "
+                    + std::to_string(frame)
+                    + ", pressure residual "
+                    + std::to_string(simulation.pressureResidual)
+                    + ", KKT residual "
+                    + std::to_string(simulation.wallSeparationKktResidual));
+            }
+
+            int highParticleCount = 0;
+            for (int particle = 0; particle < simulation.m_iNumSpheres; ++particle) {
+                metrics.MaxParticleSpeed = std::max(
+                    metrics.MaxParticleSpeed,
+                    glm::length(simulation.m_particleVel[particle]));
+                metrics.MaxParticleHeight = std::max(
+                    metrics.MaxParticleHeight,
+                    simulation.m_particlePos[particle].y);
+                if (simulation.m_particlePos[particle].y > 0.40f)
+                    ++highParticleCount;
+            }
+            if (highParticleCount
+                > std::max(8, simulation.m_iNumSpheres / 10))
+                ++metrics.LargeSplashFrames;
         }
         return metrics;
     }
@@ -386,6 +458,20 @@ namespace {
             "sub-grid and voxelized channel flow are not meaningfully different");
     }
 
+    void testSubgridMassWeightsResolveFreeSurface() {
+        SubgridSimulator simulation;
+        simulation.setupScene(16);
+        simulation.SimulateTimestep(0.004f);
+
+        require(
+            simulation.partiallyFilledFaceCount > 0,
+            "free-surface MAC cubes should carry fractional fluid mass");
+        require(
+            simulation.minimumFluidMassFraction > 0.0f
+                && simulation.minimumFluidMassFraction < 1.0f,
+            "free-surface fluid mass fractions should lie strictly between empty and full");
+    }
+
     void testRigidCollisionPreservesTangentialVelocity() {
         Simulator simulation;
         simulation.setupScene(8);
@@ -533,6 +619,28 @@ namespace {
             "sub-grid body overlap without a covered cell center produced no feedback");
     }
 
+    void testVariationalTransferPreservesSubgridGeometry() {
+        VariationalCoupledSimulator simulation;
+        simulation.setupScene(8);
+
+        RigidBody body;
+        body.Reset(
+            { 0.0f, -0.0625f, -0.0625f },
+            { 0.0f, 0.0f, 0.0f },
+            { 0.10f, 0.10f, 0.10f },
+            0.1f,
+            { 1.0f, 1.0f, 1.0f },
+            RigidBody::ShapeType::Sphere);
+        simulation.m_body = &body;
+
+        auto const solidCellsBefore = simulation.m_s;
+        simulation.rebuildSolidCellsFromBody();
+
+        require(
+            simulation.m_s == solidCellsBefore,
+            "variational cut-cell coupling must not voxelize the dynamic body into pressure cells");
+    }
+
     void testCoupledProjectionUsesUpdatedBodyVelocity() {
         VariationalCoupledSimulator simulation;
         RigidBody                   body;
@@ -609,6 +717,35 @@ namespace {
         require(
             metrics.MaxKktSolves < 16,
             "default coupled wall-separation QP required too many active-set steps");
+        require(
+            metrics.LargeSplashFrames < 12,
+            "default coupled scenario frequently launched a large fraction of particles high");
+
+        std::cout
+            << "Coupled metrics: max body speed=" << metrics.MaxBodySpeed
+            << ", max angular speed=" << metrics.MaxAngularSpeed
+            << ", max particle speed=" << metrics.MaxParticleSpeed
+            << ", max particle height=" << metrics.MaxParticleHeight
+            << ", large splash frames=" << metrics.LargeSplashFrames
+            << ", max QP sweeps=" << metrics.MaxKktSolves << '\n';
+    }
+
+    void testFreeSurfaceLongRunRemainsStable() {
+        FreeSurfaceScenarioMetrics const metrics =
+            runFreeSurfaceScenario(180);
+        require(
+            metrics.MaxParticleSpeed < 20.0f,
+            "free-surface separation particles gained excessive speed");
+        require(
+            metrics.LargeSplashFrames < 9,
+            "free-surface separation frequently launched many particles high");
+
+        std::cout
+            << "Free-surface metrics: max particle speed="
+            << metrics.MaxParticleSpeed
+            << ", max particle height=" << metrics.MaxParticleHeight
+            << ", large splash frames=" << metrics.LargeSplashFrames
+            << '\n';
     }
 
     void testSuzanneMeshSDFCouplesToVariationalSolver() {
@@ -670,11 +807,14 @@ int main(int argc, char ** argv) {
         testCoupledNegativeWallPressureSeparates();
         testCoupledMovingBodyContactAndSeparation();
         testCoupledCutFaceWithoutSolidCellCenter();
+        testVariationalTransferPreservesSubgridGeometry();
         testCoupledProjectionUsesUpdatedBodyVelocity();
         testTankPressureDoesNotPushRigidBody();
         testSuzanneMeshSDFCouplesToVariationalSolver();
         if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();
+            testSubgridMassWeightsResolveFreeSurface();
+            testFreeSurfaceLongRunRemainsStable();
             testDefaultCoupledScenarioRemainsStable();
         }
     } catch (std::exception const & error) {

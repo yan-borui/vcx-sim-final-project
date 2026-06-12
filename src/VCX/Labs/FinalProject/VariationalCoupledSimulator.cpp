@@ -170,13 +170,19 @@ namespace VCX::Labs::Final {
 
     void VariationalCoupledSimulator::setupScene(int res) {
         Simulator::setupScene(res);
+        voxelizeDynamicBody = false;
         numPressureIters = 120;
+        for (auto & fractions : _faceOpenFraction)
+            fractions.assign(m_iNumCells, 0.0f);
         for (auto & fractions : _faceFluidFraction)
             fractions.assign(m_iNumCells, 0.0f);
-        pressureResidual          = 0.0f;
-        wallSeparationKktResidual = 0.0f;
-        wallSeparationIterations  = 0;
-        pressureSolveSucceeded    = true;
+        pressureResidual            = 0.0f;
+        wallSeparationKktResidual   = 0.0f;
+        wallSeparationQpResidual    = 0.0f;
+        wallSeparationSpeedResidual = 0.0f;
+        maximumBoundaryPressure     = 0.0f;
+        wallSeparationIterations    = 0;
+        pressureSolveSucceeded      = true;
     }
 
     bool VariationalCoupledSimulator::isValidCell(glm::ivec3 const & cell) const {
@@ -257,7 +263,7 @@ namespace VCX::Labs::Final {
             int const        faceIdx  = gridOffset(face);
             bool const       tankOpen = isTankFaceOpen(face, side.Direction);
             float const      boundaryWeight =
-                tankOpen ? 1.0f - faceWeight(side.Direction, faceIdx) : 1.0f;
+                tankOpen ? 1.0f - _faceOpenFraction[side.Direction][faceIdx] : 1.0f;
             if (boundaryWeight > 1e-6f)
                 touchesSolid = true;
             if (tankOpen
@@ -269,24 +275,17 @@ namespace VCX::Labs::Final {
         return touchesSolid && touchesAir;
     }
 
-    float VariationalCoupledSimulator::estimateFaceFluidFraction(
-        glm::ivec3 const & face,
-        int                dir) const {
+    glm::vec2 VariationalCoupledSimulator::estimateFaceFractions(
+        glm::ivec3 const &         face,
+        int                        dir,
+        std::vector<float> const & liquidLevelSet) const {
         if (! isTankFaceOpen(face, dir))
-            return 0.0f;
-        if (! m_body)
-            return 1.0f;
+            return glm::vec2(0.0f);
 
-        glm::vec3 const center         = faceCenter(face, dir);
-        float const     centerDistance = m_body->GetSDF(center);
-        float const     sampleRadius   = 0.5f * std::sqrt(3.0f) * m_h;
-        if (centerDistance >= sampleRadius)
-            return 1.0f;
-        if (centerDistance <= -sampleRadius)
-            return 0.0f;
-
-        int const sampleCount  = std::clamp(volumeSamplesPerAxis, 1, 16);
-        int       fluidSamples = 0;
+        glm::vec3 const center      = faceCenter(face, dir);
+        int const sampleCount       = std::clamp(volumeSamplesPerAxis, 1, 16);
+        int       openSamples       = 0;
+        int       fluidSamples      = 0;
         for (int x = 0; x < sampleCount; ++x) {
             for (int y = 0; y < sampleCount; ++y) {
                 for (int z = 0; z < sampleCount; ++z) {
@@ -295,24 +294,41 @@ namespace VCX::Labs::Final {
                         (float(y) + 0.5f) / float(sampleCount) - 0.5f,
                         (float(z) + 0.5f) / float(sampleCount) - 0.5f,
                     };
-                    if (m_body->GetSDF(center + unitSample * m_h) >= 0.0f)
+                    glm::vec3 const samplePosition =
+                        center + unitSample * m_h;
+                    if (m_body && m_body->GetSDF(samplePosition) < 0.0f)
+                        continue;
+
+                    ++openSamples;
+                    if (sampleCellCenteredField(
+                            liquidLevelSet,
+                            samplePosition)
+                        <= 0.0f)
                         ++fluidSamples;
                 }
             }
         }
-        return float(fluidSamples)
-            / float(sampleCount * sampleCount * sampleCount);
+        float const inverseSampleCount =
+            1.0f / float(sampleCount * sampleCount * sampleCount);
+        return {
+            float(openSamples) * inverseSampleCount,
+            float(fluidSamples) * inverseSampleCount,
+        };
     }
 
-    void VariationalCoupledSimulator::updateFaceFluidFractions() {
+    void VariationalCoupledSimulator::updateFaceFluidFractions(
+        std::vector<float> const & liquidLevelSet) {
         for (int k = 0; k < m_iCellZ; ++k) {
             for (int j = 0; j < m_iCellY; ++j) {
                 for (int i = 0; i < m_iCellX; ++i) {
                     glm::ivec3 const face { i, j, k };
                     int const        idx = gridOffset(face);
-                    for (int dir = 0; dir < 3; ++dir)
-                        _faceFluidFraction[dir][idx] =
-                            estimateFaceFluidFraction(face, dir);
+                    for (int dir = 0; dir < 3; ++dir) {
+                        glm::vec2 const fractions =
+                            estimateFaceFractions(face, dir, liquidLevelSet);
+                        _faceOpenFraction[dir][idx]  = fractions.x;
+                        _faceFluidFraction[dir][idx] = fractions.y;
+                    }
                 }
             }
         }
@@ -370,8 +386,8 @@ namespace VCX::Labs::Final {
         (void) numIters;
         (void) overRelaxation;
 
-        updateFaceFluidFractions();
         std::vector<float> const liquidLevelSet = buildParticleLevelSet();
+        updateFaceFluidFractions(liquidLevelSet);
 
         std::vector<int> cellToRow(m_iNumCells, -1);
         std::vector<int> rowToCell;
@@ -423,9 +439,6 @@ namespace VCX::Labs::Final {
 
         int const pressureCount = int(rowToCell.size());
         std::vector<WallFace> wallFaces;
-        std::vector<int> wallFaceForSide(
-            rowToCell.size() * FaceNeighbors.size(),
-            -1);
         for (int row = 0; row < pressureCount; ++row) {
             glm::ivec3 const cell = decodeCell(rowToCell[row]);
             bool const candidateCell =
@@ -443,13 +456,14 @@ namespace VCX::Labs::Final {
                     isTankFaceOpen(face, side.Direction);
                 float const openWeight =
                     tankOpen ? faceWeight(side.Direction, faceIdx) : 0.0f;
-                float const boundaryWeight = 1.0f - openWeight;
+                float const boundaryWeight =
+                    tankOpen
+                    ? 1.0f - _faceOpenFraction[side.Direction][faceIdx]
+                    : 1.0f;
                 if (boundaryWeight <= 1e-6f)
                     continue;
 
                 bool const bodyBoundary = tankOpen && m_body;
-                wallFaceForSide[row * FaceNeighbors.size() + sideIndex] =
-                    int(wallFaces.size());
                 wallFaces.push_back(WallFace {
                     .Row                = row,
                     .FaceIndex          = faceIdx,
@@ -503,11 +517,6 @@ namespace VCX::Labs::Final {
                      sideIndex < int(FaceNeighbors.size());
                      ++sideIndex) {
                     FaceNeighbor const & side = FaceNeighbors[sideIndex];
-                    int const wallIndex =
-                        wallFaceForSide[row * FaceNeighbors.size() + sideIndex];
-                    if (wallIndex >= 0 && wallFaces[wallIndex].Candidate)
-                        hasDirichletBoundary = true;
-
                     glm::ivec3 const face = cell + side.FaceOffset;
                     glm::ivec3 const neighbor = cell + side.CellOffset;
                     int const faceIdx = gridOffset(face);
@@ -885,12 +894,17 @@ namespace VCX::Labs::Final {
                 m_body->GetInertiaWorldInv() * m_feedbackTorque * dt;
         }
 
-        wallSeparationKktResidual = 0.0f;
+        wallSeparationKktResidual   = 0.0f;
+        wallSeparationQpResidual    = 0.0f;
+        wallSeparationSpeedResidual = 0.0f;
+        maximumBoundaryPressure     = 0.0f;
         for (WallFace const & wallFace : wallFaces) {
             if (! wallFace.Candidate)
                 continue;
 
             float const q = boundaryPressure(wallFace);
+            maximumBoundaryPressure =
+                std::max(maximumBoundaryPressure, q);
             float const boundaryVelocity =
                 intermediateVelocity[wallFace.FaceIndex][wallFace.Direction]
                 + wallFace.DivergenceSign
@@ -919,8 +933,8 @@ namespace VCX::Labs::Final {
             violation = std::max(
                 violation,
                 std::abs(q * separationSpeed));
-            wallSeparationKktResidual =
-                std::max(wallSeparationKktResidual, violation);
+            wallSeparationSpeedResidual =
+                std::max(wallSeparationSpeedResidual, violation);
         }
         for (int index = 0; index < candidateCount; ++index) {
             float violation =
@@ -933,9 +947,12 @@ namespace VCX::Labs::Final {
                 violation = std::max(
                     violation,
                     float(std::max(-reducedGradient[index], 0.0)));
-            wallSeparationKktResidual =
-                std::max(wallSeparationKktResidual, violation);
+            wallSeparationQpResidual =
+                std::max(wallSeparationQpResidual, violation);
         }
+        wallSeparationKktResidual = std::max(
+            wallSeparationSpeedResidual,
+            wallSeparationQpResidual);
 
         pressureSolveSucceeded =
             std::isfinite(pressureResidual)

@@ -39,11 +39,13 @@ namespace VCX::Labs::Final {
 
         setupChannelParticles();
 
+        for (auto & fractions : _faceOpenFraction)
+            fractions.assign(m_iNumCells, 0.0f);
         for (auto & fractions : _faceFluidFraction)
             fractions.assign(m_iNumCells, 0.0f);
         pressureResidual       = 0.0f;
         pressureSolveSucceeded = true;
-        updateFaceFluidFractions();
+        updateFaceFluidFractions(buildParticleLevelSet());
     }
 
     void SubgridSimulator::setupChannelParticles() {
@@ -145,16 +147,18 @@ namespace VCX::Labs::Final {
             || hasFluidSupportAcrossOpenFace(cell);
     }
 
-    float SubgridSimulator::estimateFaceFluidFraction(glm::ivec3 const & face, int dir) {
+    glm::vec2 SubgridSimulator::estimateFaceFractions(
+        glm::ivec3 const &         face,
+        int                        dir,
+        std::vector<float> const & liquidLevelSet) {
         if (! isTankFaceOpen(face, dir))
-            return 0.0f;
-        if (! m_body)
-            return 1.0f;
+            return glm::vec2(0.0f);
 
         glm::vec3 offset(0.5f);
         offset[dir]                  = 0.0f;
         glm::vec3 const center       = (glm::vec3(face) + offset) * m_h - glm::vec3(0.5f);
         int const       sampleCount  = std::clamp(volumeSamplesPerAxis, 1, 16);
+        int             openSamples  = 0;
         int             fluidSamples = 0;
 
         for (int x = 0; x < sampleCount; ++x) {
@@ -165,18 +169,35 @@ namespace VCX::Labs::Final {
                         (float(y) + 0.5f) / float(sampleCount) - 0.5f,
                         (float(z) + 0.5f) / float(sampleCount) - 0.5f,
                     };
-                    if (m_body->GetSDF(center + unitSample * m_h) >= 0.0f)
+                    glm::vec3 const samplePosition =
+                        center + unitSample * m_h;
+                    if (m_body && m_body->GetSDF(samplePosition) < 0.0f)
+                        continue;
+
+                    ++openSamples;
+                    if (sampleCellCenteredField(
+                            liquidLevelSet,
+                            samplePosition)
+                        <= 0.0f)
                         ++fluidSamples;
                 }
             }
         }
 
-        return float(fluidSamples) / float(sampleCount * sampleCount * sampleCount);
+        float const inverseSampleCount =
+            1.0f / float(sampleCount * sampleCount * sampleCount);
+        return {
+            float(openSamples) * inverseSampleCount,
+            float(fluidSamples) * inverseSampleCount,
+        };
     }
 
-    void SubgridSimulator::updateFaceFluidFractions() {
-        partiallyOpenFaceCount  = 0;
-        minimumOpenFaceFraction = 1.0f;
+    void SubgridSimulator::updateFaceFluidFractions(
+        std::vector<float> const & liquidLevelSet) {
+        partiallyOpenFaceCount   = 0;
+        partiallyFilledFaceCount = 0;
+        minimumOpenFaceFraction  = 1.0f;
+        minimumFluidMassFraction = 1.0f;
 
         for (int k = 0; k < m_iCellZ; ++k) {
             for (int j = 0; j < m_iCellY; ++j) {
@@ -184,11 +205,19 @@ namespace VCX::Labs::Final {
                     glm::ivec3 const face { i, j, k };
                     int const        idx = index2GridOffset(face);
                     for (int dir = 0; dir < 3; ++dir) {
-                        float const fraction         = estimateFaceFluidFraction(face, dir);
-                        _faceFluidFraction[dir][idx] = fraction;
-                        if (fraction > 0.0f && fraction < 1.0f) {
+                        glm::vec2 const fractions =
+                            estimateFaceFractions(face, dir, liquidLevelSet);
+                        _faceOpenFraction[dir][idx]  = fractions.x;
+                        _faceFluidFraction[dir][idx] = fractions.y;
+                        if (fractions.x > 0.0f && fractions.x < 1.0f) {
                             ++partiallyOpenFaceCount;
-                            minimumOpenFaceFraction = std::min(minimumOpenFaceFraction, fraction);
+                            minimumOpenFaceFraction =
+                                std::min(minimumOpenFaceFraction, fractions.x);
+                        }
+                        if (fractions.y > 0.0f && fractions.y < 1.0f) {
+                            ++partiallyFilledFaceCount;
+                            minimumFluidMassFraction =
+                                std::min(minimumFluidMassFraction, fractions.y);
                         }
                     }
                 }
@@ -197,6 +226,8 @@ namespace VCX::Labs::Final {
 
         if (partiallyOpenFaceCount == 0)
             minimumOpenFaceFraction = 0.0f;
+        if (partiallyFilledFaceCount == 0)
+            minimumFluidMassFraction = 0.0f;
     }
 
     float SubgridSimulator::faceWeight(int dir, int idx) const {
@@ -215,8 +246,8 @@ namespace VCX::Labs::Final {
         (void) overRelaxation;
         (void) compensateDrift;
 
-        updateFaceFluidFractions();
         std::vector<float> const liquidLevelSet = buildParticleLevelSet();
+        updateFaceFluidFractions(liquidLevelSet);
 
         std::vector<int> cellToMatrix(m_iNumCells, -1);
         std::vector<int> matrixToCell;

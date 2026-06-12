@@ -77,6 +77,53 @@ namespace VCX::Labs::Final {
         return levelSet;
     }
 
+    float Simulator::sampleCellCenteredField(
+        std::vector<float> const & field,
+        glm::vec3 const &         position) const {
+        if (field.size() != std::size_t(m_iNumCells))
+            return 0.0f;
+
+        glm::vec3 const gridPosition =
+            (position + glm::vec3(0.5f)) * m_fInvSpacing
+            - glm::vec3(0.5f);
+        glm::ivec3 lower {
+            int(std::floor(gridPosition.x)),
+            int(std::floor(gridPosition.y)),
+            int(std::floor(gridPosition.z)),
+        };
+        glm::vec3 fraction = gridPosition - glm::vec3(lower);
+
+        glm::ivec3 const upperLimit {
+            m_iCellX - 2,
+            m_iCellY - 2,
+            m_iCellZ - 2,
+        };
+        for (int axis = 0; axis < 3; ++axis) {
+            if (lower[axis] < 0) {
+                lower[axis]    = 0;
+                fraction[axis] = 0.0f;
+            } else if (lower[axis] > upperLimit[axis]) {
+                lower[axis]    = upperLimit[axis];
+                fraction[axis] = 1.0f;
+            }
+        }
+
+        auto sample = [&](int x, int y, int z) {
+            return field[
+                (lower.x + x)
+                + m_iCellX * (
+                    (lower.y + y)
+                    + m_iCellY * (lower.z + z))];
+        };
+        float const c00 = glm::mix(sample(0, 0, 0), sample(1, 0, 0), fraction.x);
+        float const c10 = glm::mix(sample(0, 1, 0), sample(1, 1, 0), fraction.x);
+        float const c01 = glm::mix(sample(0, 0, 1), sample(1, 0, 1), fraction.x);
+        float const c11 = glm::mix(sample(0, 1, 1), sample(1, 1, 1), fraction.x);
+        float const c0  = glm::mix(c00, c10, fraction.y);
+        float const c1  = glm::mix(c01, c11, fraction.y);
+        return glm::mix(c0, c1, fraction.z);
+    }
+
     float Simulator::ghostFluidPressureScale(
         std::vector<float> const & levelSet,
         int                        fluidCell,
