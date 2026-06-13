@@ -1,5 +1,7 @@
 ﻿#include "Labs/FinalProject/FluidSimulator.h"
 
+#include <cmath>
+
 namespace VCX::Labs::Final {
     bool Simulator::isValidCell(glm::ivec3 const & index) const {
         return index.x >= 0 && index.x < m_iCellX
@@ -60,9 +62,16 @@ namespace VCX::Labs::Final {
                             (glm::vec3(cell) + glm::vec3(0.5f)) * m_h
                             - glm::vec3(0.5f);
                         int const idx = offset(cell);
-                        levelSet[idx] = std::min(
-                            levelSet[idx],
-                            glm::length(center - particle) - reconstructionRadius);
+                        glm::vec3 const delta = center - particle;
+                        float const currentDistance =
+                            levelSet[idx] + reconstructionRadius;
+                        float const distanceSquared = glm::dot(delta, delta);
+                        if (distanceSquared
+                            < currentDistance * currentDistance) {
+                            levelSet[idx] =
+                                std::sqrt(distanceSquared)
+                                - reconstructionRadius;
+                        }
                     }
                 }
             }

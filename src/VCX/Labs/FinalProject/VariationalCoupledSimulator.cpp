@@ -549,10 +549,11 @@ namespace VCX::Labs::Final {
         Eigen::VectorXd rhsZ = Eigen::VectorXd::Zero(candidateCount);
         std::vector<Eigen::Triplet<double>> triplets;
         triplets.reserve(unconstrainedCount * 9);
-        Eigen::MatrixXd hybridYZ =
-            Eigen::MatrixXd::Zero(unconstrainedCount, candidateCount);
-        Eigen::MatrixXd candidateZZ =
-            Eigen::MatrixXd::Zero(candidateCount, candidateCount);
+        std::vector<int> candidatePressureRows(candidateCount, -1);
+        Eigen::VectorXd candidateCoupling =
+            Eigen::VectorXd::Zero(candidateCount);
+        Eigen::VectorXd candidateDiagonal =
+            Eigen::VectorXd::Zero(candidateCount);
         Eigen::MatrixXd rigidY =
             Eigen::MatrixXd::Zero(unconstrainedCount, 6);
         Eigen::MatrixXd rigidZ =
@@ -586,10 +587,12 @@ namespace VCX::Labs::Final {
             int qRow = wallFace.UnconstrainedIndex;
             if (wallFace.Candidate) {
                 int const qColumn = wallFace.CandidateIndex;
-                candidateZZ(qColumn, qColumn) += coefficient;
+                candidateDiagonal[qColumn] += coefficient;
                 rhsZ[qColumn] += boundaryRhs;
-                if (! pinnedRows[pressureRow])
-                    hybridYZ(pressureRow, qColumn) -= coefficient;
+                if (! pinnedRows[pressureRow]) {
+                    candidatePressureRows[qColumn] = pressureRow;
+                    candidateCoupling[qColumn] -= coefficient;
+                }
             } else {
                 triplets.emplace_back(qRow, qRow, coefficient);
                 rhsY[qRow] += boundaryRhs;
@@ -757,12 +760,41 @@ namespace VCX::Labs::Final {
             return result;
         };
 
-        Eigen::MatrixXd fullYZ = hybridYZ;
-        Eigen::MatrixXd fullZZ = candidateZZ;
-        if (dynamicBody) {
-            fullYZ += lowRankY * lowRankZ.transpose();
-            fullZZ += lowRankZ * lowRankZ.transpose();
-        }
+        auto multiplyYZ = [&](Eigen::VectorXd const & value) {
+            Eigen::VectorXd result =
+                Eigen::VectorXd::Zero(unconstrainedCount);
+            for (int column = 0; column < candidateCount; ++column) {
+                int const row = candidatePressureRows[column];
+                if (row >= 0)
+                    result[row] +=
+                        candidateCoupling[column] * value[column];
+            }
+            if (dynamicBody)
+                result.noalias() +=
+                    lowRankY * (lowRankZ.transpose() * value);
+            return result;
+        };
+        auto multiplyYZTranspose = [&](Eigen::VectorXd const & value) {
+            Eigen::VectorXd result = Eigen::VectorXd::Zero(candidateCount);
+            for (int column = 0; column < candidateCount; ++column) {
+                int const row = candidatePressureRows[column];
+                if (row >= 0)
+                    result[column] =
+                        candidateCoupling[column] * value[row];
+            }
+            if (dynamicBody)
+                result.noalias() +=
+                    lowRankZ * (lowRankY.transpose() * value);
+            return result;
+        };
+        auto multiplyZZ = [&](Eigen::VectorXd const & value) {
+            Eigen::VectorXd result =
+                (candidateDiagonal.array() * value.array()).matrix();
+            if (dynamicBody)
+                result.noalias() +=
+                    lowRankZ * (lowRankZ.transpose() * value);
+            return result;
+        };
 
         Eigen::VectorXd solvedRhsY = solveUnconstrained(rhsY);
 
@@ -773,14 +805,31 @@ namespace VCX::Labs::Final {
         bool qpConverged = true;
         if (candidateCount > 0) {
             Eigen::VectorXd reducedRhs =
-                rhsZ - fullYZ.transpose() * solvedRhsY;
+                rhsZ - multiplyYZTranspose(solvedRhsY);
 
             if (candidateCount <= 64) {
                 // Small systems are fastest with the exact dense Schur
                 // complement and active-set solve.
-                Eigen::MatrixXd solvedYZ = solveUnconstrained(fullYZ);
+                Eigen::MatrixXd denseYZ =
+                    Eigen::MatrixXd::Zero(
+                        unconstrainedCount,
+                        candidateCount);
+                for (int column = 0; column < candidateCount; ++column) {
+                    int const row = candidatePressureRows[column];
+                    if (row >= 0)
+                        denseYZ(row, column) = candidateCoupling[column];
+                }
+                if (dynamicBody)
+                    denseYZ.noalias() +=
+                        lowRankY * lowRankZ.transpose();
+                Eigen::MatrixXd solvedYZ = solveUnconstrained(denseYZ);
+                Eigen::MatrixXd denseZZ =
+                    candidateDiagonal.asDiagonal();
+                if (dynamicBody)
+                    denseZZ.noalias() +=
+                        lowRankZ * lowRankZ.transpose();
                 Eigen::MatrixXd reducedHessian =
-                    fullZZ - fullYZ.transpose() * solvedYZ;
+                    denseZZ - denseYZ.transpose() * solvedYZ;
                 reducedHessian =
                     0.5 * (reducedHessian + reducedHessian.transpose());
 
@@ -797,23 +846,36 @@ namespace VCX::Labs::Final {
                 auto applyReducedHessian =
                     [&](Eigen::VectorXd const & value) {
                         Eigen::VectorXd const eliminated =
-                            solveUnconstrained(fullYZ * value);
+                            solveUnconstrained(multiplyYZ(value));
                         Eigen::VectorXd result =
-                            fullZZ * value
-                            - fullYZ.transpose() * eliminated;
+                            multiplyZZ(value)
+                            - multiplyYZTranspose(eliminated);
                         return result;
                     };
 
-                Eigen::VectorXd diagonal =
-                    fullZZ.diagonal().cwiseMax(1e-8);
+                Eigen::VectorXd diagonal = candidateDiagonal;
+                if (dynamicBody)
+                    diagonal.array() +=
+                        lowRankZ.rowwise().squaredNorm().array();
+                diagonal = diagonal.cwiseMax(1e-8);
                 Eigen::VectorXd const scaling = diagonal.cwiseSqrt();
-                Eigen::MatrixXd normalizedUpper = fullZZ;
-                normalizedUpper.array().colwise() /= scaling.array();
-                normalizedUpper.array().rowwise() /=
-                    scaling.transpose().array();
-                double const lipschitz = std::max(
-                    normalizedUpper.cwiseAbs().rowwise().sum().maxCoeff(),
-                    1e-8);
+                double lipschitz =
+                    (candidateDiagonal.array() / diagonal.array())
+                        .maxCoeff();
+                if (dynamicBody) {
+                    Eigen::MatrixXd scaledLowRank = lowRankZ;
+                    scaledLowRank.array().colwise() /= scaling.array();
+                    Matrix6 const lowRankGram =
+                        scaledLowRank.transpose() * scaledLowRank;
+                    Eigen::SelfAdjointEigenSolver<Matrix6> eigenSolver(
+                        lowRankGram,
+                        Eigen::EigenvaluesOnly);
+                    if (eigenSolver.info() == Eigen::Success)
+                        lipschitz += eigenSolver.eigenvalues().maxCoeff();
+                    else
+                        lipschitz += scaledLowRank.squaredNorm();
+                }
+                lipschitz = std::max(lipschitz, 1e-8);
                 Eigen::VectorXd const scaledRhs =
                     (reducedRhs.array() / scaling.array()).matrix();
                 auto applyScaledHessian =
@@ -1074,7 +1136,7 @@ namespace VCX::Labs::Final {
                 candidatePressure[index]);
 
         Eigen::VectorXd unconstrainedPressure = solveUnconstrained(
-            rhsY - fullYZ * candidatePressure);
+            rhsY - multiplyYZ(candidatePressure));
         if (! unconstrainedPressure.allFinite()
             || ! candidatePressure.allFinite()) {
             pressureSolveSucceeded = false;
@@ -1084,12 +1146,12 @@ namespace VCX::Labs::Final {
 
         Eigen::VectorXd unconstrainedResidual =
             baseYY * unconstrainedPressure
-            + hybridYZ * candidatePressure
+            + multiplyYZ(candidatePressure)
             - rhsY;
         if (dynamicBody) {
-            unconstrainedResidual += lowRankY * (
-                lowRankY.transpose() * unconstrainedPressure
-                + lowRankZ.transpose() * candidatePressure);
+            unconstrainedResidual +=
+                lowRankY
+                * (lowRankY.transpose() * unconstrainedPressure);
         }
         pressureResidual = float(
             unconstrainedResidual.norm()

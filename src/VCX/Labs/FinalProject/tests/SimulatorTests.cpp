@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -200,6 +201,13 @@ namespace {
         glm::ivec3 const fluidCell { 1, 3, 3 };
         simulation.m_type[offset(simulation, fluidCell)]  = Simulator::FLUID_CELL;
         simulation.m_vel[offset(simulation, fluidCell)].x = wallVelocity;
+        glm::vec3 const fluidCenter =
+            (glm::vec3(fluidCell) + glm::vec3(0.5f)) * simulation.m_h
+            - glm::vec3(0.5f);
+        simulation.m_iNumSpheres = 1;
+        simulation.m_particlePos.assign(1, fluidCenter);
+        simulation.m_particleVel.assign(1, glm::vec3(0.0f));
+        simulation.m_particleColor.assign(1, glm::vec3(1.0f));
     }
 
     void testStandardWallProjection() {
@@ -483,7 +491,12 @@ namespace {
         float const weightedMaxX = runSubgridChannel(true);
         float const binaryMaxX   = runSubgridChannel(false);
 
-        require(weightedMaxX > 0.12f, "sub-grid weights did not carry fluid through the gap");
+        if (weightedMaxX <= 0.12f) {
+            throw std::runtime_error(
+                "sub-grid weights did not carry fluid through the gap: weighted="
+                + std::to_string(weightedMaxX)
+                + ", binary=" + std::to_string(binaryMaxX));
+        }
         require(
             weightedMaxX > binaryMaxX + 0.08f,
             "sub-grid and voxelized channel flow are not meaningfully different");
@@ -587,6 +600,13 @@ namespace {
         glm::ivec3 const fluidCell { 1, 3, 3 };
         simulation.m_type[offset(simulation, fluidCell)]  = Simulator::FLUID_CELL;
         simulation.m_vel[offset(simulation, fluidCell)].x = wallVelocity;
+        glm::vec3 const fluidCenter =
+            (glm::vec3(fluidCell) + glm::vec3(0.5f)) * simulation.m_h
+            - glm::vec3(0.5f);
+        simulation.m_iNumSpheres = 1;
+        simulation.m_particlePos.assign(1, fluidCenter);
+        simulation.m_particleVel.assign(1, glm::vec3(0.0f));
+        simulation.m_particleColor.assign(1, glm::vec3(1.0f));
     }
 
     void testCoupledWallSeparation() {
@@ -943,11 +963,229 @@ namespace {
                 isFinite),
             "mesh coupled simulation produced a non-finite particle position");
     }
+
+    template<typename Function>
+    double benchmarkMillisecondsPerStep(int steps, Function && function) {
+        auto const start = std::chrono::steady_clock::now();
+        for (int step = 0; step < steps; ++step)
+            function();
+        auto const elapsed = std::chrono::steady_clock::now() - start;
+        return std::chrono::duration<double, std::milli>(elapsed).count()
+            / double(steps);
+    }
+
+    void runPerformanceBenchmarks() {
+        {
+            VariationalCoupledSimulator simulation;
+            simulation.setupScene(16);
+            RigidBody body;
+            body.Reset(
+                { 0.0f, 0.3f, 0.0f },
+                { 0.0f, 0.0f, 0.0f },
+                { 0.3f, 0.3f, 0.3f },
+                0.3f,
+                { 0.8f, 0.2f, 0.2f });
+            simulation.m_body = &body;
+            double integrateMs = 0.0;
+            double collisionMs = 0.0;
+            double transferToGridMs = 0.0;
+            double densityMs = 0.0;
+            double pressureMs = 0.0;
+            double transferToParticlesMs = 0.0;
+            int maximumCandidates = 0;
+            int maximumOperatorApplications = 0;
+            int totalOperatorApplications = 0;
+            double const milliseconds = benchmarkMillisecondsPerStep(
+                30,
+                [&] {
+                    body.position += body.velocity * 0.016f;
+                    body.ResolveTankContact(-0.5f, 0.5f);
+                    body.velocity.y -= 9.81f * 0.016f;
+                    auto measure = [](double & total, auto && function) {
+                        auto const start = std::chrono::steady_clock::now();
+                        function();
+                        total += std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+                    };
+                    measure(integrateMs, [&] {
+                        simulation.integrateParticles(0.016f);
+                    });
+                    measure(collisionMs, [&] {
+                        simulation.handleParticleCollisions();
+                        simulation.handleParticleCollisions();
+                    });
+                    measure(transferToGridMs, [&] {
+                        simulation.transferVelocities(true, simulation.m_fRatio);
+                    });
+                    measure(densityMs, [&] {
+                        simulation.updateParticleDensity();
+                    });
+                    measure(pressureMs, [&] {
+                        simulation.solveIncompressibility(
+                            simulation.numPressureIters,
+                            0.016f,
+                            simulation.overRelaxation,
+                            simulation.compensateDrift);
+                    });
+                    maximumCandidates = std::max(
+                        maximumCandidates,
+                        simulation.wallSeparationCandidateCount);
+                    maximumOperatorApplications = std::max(
+                        maximumOperatorApplications,
+                        simulation.wallSeparationIterations);
+                    totalOperatorApplications +=
+                        simulation.wallSeparationIterations;
+                    measure(transferToParticlesMs, [&] {
+                        simulation.transferVelocities(false, simulation.m_fRatio);
+                    });
+                    body.velocity +=
+                        simulation.m_feedbackForce / body.mass * 0.016f;
+                    body.angularVelocity +=
+                        body.GetInertiaWorldInv()
+                        * simulation.m_feedbackTorque * 0.016f;
+                });
+            std::cout << "BENCH coupled_ms_per_step=" << milliseconds
+                      << " integrate=" << integrateMs / 30.0
+                      << " collision=" << collisionMs / 30.0
+                      << " p2g=" << transferToGridMs / 30.0
+                      << " density=" << densityMs / 30.0
+                      << " pressure=" << pressureMs / 30.0
+                      << " g2p=" << transferToParticlesMs / 30.0
+                      << " max_candidates=" << maximumCandidates
+                      << " max_operator_applications="
+                      << maximumOperatorApplications
+                      << " avg_operator_applications="
+                      << double(totalOperatorApplications) / 30.0
+                      << '\n';
+        }
+        {
+            VariationalCoupledSimulator simulation;
+            simulation.setupScene(24);
+            RigidBody body;
+            body.Reset(
+                { 0.0f, 0.3f, 0.0f },
+                { 0.0f, 0.0f, 0.0f },
+                { 0.3f, 0.3f, 0.3f },
+                0.3f,
+                { 0.8f, 0.2f, 0.2f });
+            simulation.m_body = &body;
+            int maximumCandidates = 0;
+            int maximumOperatorApplications = 0;
+            int totalOperatorApplications = 0;
+            double const milliseconds = benchmarkMillisecondsPerStep(
+                20,
+                [&] {
+                    body.position += body.velocity * 0.005f;
+                    body.ResolveTankContact(-0.5f, 0.5f);
+                    body.velocity.y -= 9.81f * 0.005f;
+                    simulation.SimulateTimestep(0.005f);
+                    body.velocity +=
+                        simulation.m_feedbackForce / body.mass * 0.005f;
+                    body.angularVelocity +=
+                        body.GetInertiaWorldInv()
+                        * simulation.m_feedbackTorque * 0.005f;
+                    maximumCandidates = std::max(
+                        maximumCandidates,
+                        simulation.wallSeparationCandidateCount);
+                    maximumOperatorApplications = std::max(
+                        maximumOperatorApplications,
+                        simulation.wallSeparationIterations);
+                    totalOperatorApplications +=
+                        simulation.wallSeparationIterations;
+                });
+            std::cout << "BENCH variational_ms_per_step=" << milliseconds
+                      << " max_candidates=" << maximumCandidates
+                      << " max_operator_applications="
+                      << maximumOperatorApplications
+                      << " avg_operator_applications="
+                      << double(totalOperatorApplications) / 20.0
+                      << '\n';
+        }
+        {
+            SubgridSimulator simulation;
+            simulation.setupScene(24);
+            double integrateMs = 0.0;
+            double collisionMs = 0.0;
+            double transferToGridMs = 0.0;
+            double densityMs = 0.0;
+            double pressureMs = 0.0;
+            double transferToParticlesMs = 0.0;
+            double const milliseconds = benchmarkMillisecondsPerStep(
+                60,
+                [&] {
+                    auto measure = [](double & total, auto && function) {
+                        auto const start = std::chrono::steady_clock::now();
+                        function();
+                        total += std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+                    };
+                    measure(integrateMs, [&] {
+                        simulation.integrateParticles(0.016f);
+                    });
+                    measure(collisionMs, [&] {
+                        simulation.handleParticleCollisions();
+                        simulation.handleParticleCollisions();
+                    });
+                    measure(transferToGridMs, [&] {
+                        simulation.transferVelocities(true, simulation.m_fRatio);
+                    });
+                    measure(densityMs, [&] {
+                        simulation.updateParticleDensity();
+                    });
+                    measure(pressureMs, [&] {
+                        simulation.solveIncompressibility(
+                            simulation.numPressureIters,
+                            0.016f,
+                            simulation.overRelaxation,
+                            simulation.compensateDrift);
+                    });
+                    measure(transferToParticlesMs, [&] {
+                        simulation.transferVelocities(false, simulation.m_fRatio);
+                    });
+                });
+            std::cout << "BENCH subgrid_ms_per_step=" << milliseconds
+                      << " integrate=" << integrateMs / 60.0
+                      << " collision=" << collisionMs / 60.0
+                      << " p2g=" << transferToGridMs / 60.0
+                      << " density=" << densityMs / 60.0
+                      << " pressure=" << pressureMs / 60.0
+                      << " g2p=" << transferToParticlesMs / 60.0
+                      << '\n';
+        }
+        {
+            FreeSurfaceSeparationSimulator simulation;
+            simulation.setupScene(24);
+            double const milliseconds = benchmarkMillisecondsPerStep(
+                60,
+                [&] { simulation.SimulateTimestep(0.016f); });
+            std::cout << "BENCH free_surface_ms_per_step=" << milliseconds
+                      << '\n';
+        }
+        {
+            FluidSimulator3D simulation;
+            simulation.Init(20, 30, 20, 2.0f);
+            simulation.AddDefaultBodies();
+            double const milliseconds = benchmarkMillisecondsPerStep(
+                30,
+                [&] { simulation.Step(); });
+            std::cout << "BENCH fluid_rigid_3d_ms_per_step=" << milliseconds
+                      << '\n';
+        }
+    }
 } // namespace
 
 int main(int argc, char ** argv) {
     bool const quick =
         argc > 1 && std::string_view(argv[1]) == "--quick";
+    bool const benchmark =
+        argc > 1 && std::string_view(argv[1]) == "--benchmark";
+
+    if (benchmark) {
+        runPerformanceBenchmarks();
+        return 0;
+    }
 
     try {
         testStandardWallProjection();
