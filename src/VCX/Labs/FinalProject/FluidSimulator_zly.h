@@ -99,6 +99,7 @@ namespace VCX::Labs::Final {
             ApplyPressureGradient();
             UpdateBodyVelocities();
             AdvectParticles();
+            MarkCells();
             AdvanceBodies();
             if (++seedCounter % 5 == 0) ReseedParticles(); // reseed every 5 steps
         }
@@ -483,11 +484,20 @@ namespace VCX::Labs::Final {
                 b.position += dt * b.velocity;
                 float m  = b.radius + dx * .05f;
                 auto  cl = [&](float & p, float & v, float lo, float hi) {
-                if(p<lo+m){p=lo+m;v=std::abs(v)*.3f;}if(p>hi-m){p=hi-m;v=-std::abs(v)*.3f;} };
+                    if (p < lo + m) {
+                        p = lo + m;
+                        if (v < 0.0f)
+                            v = 0.0f;
+                    }
+                    if (p > hi - m) {
+                        p = hi - m;
+                        if (v > 0.0f)
+                            v = 0.0f;
+                    }
+                };
                 cl(b.position.x, b.velocity.x, 0, domainW);
                 cl(b.position.y, b.velocity.y, 0, domainH);
                 cl(b.position.z, b.velocity.z, 0, domainD);
-                b.velocity *= .97f;
             }
         }
 

@@ -7,12 +7,14 @@
 #include <string_view>
 
 #include "Labs/FinalProject/FreeSurfaceSeparationSimulator.h"
+#include "Labs/FinalProject/FluidSimulator_zly.h"
 #include "Labs/FinalProject/MeshSDF.h"
 #include "Labs/FinalProject/SubgridSimulator.h"
 #include "Labs/FinalProject/VariationalCoupledSimulator.h"
 
 namespace {
     using VCX::Labs::Final::FreeSurfaceSeparationSimulator;
+    using VCX::Labs::Final::FluidSimulator3D;
     using VCX::Labs::Final::MeshSDF;
     using VCX::Labs::Final::RigidBody;
     using VCX::Labs::Final::Simulator;
@@ -820,6 +822,55 @@ namespace {
             "default coupled scenario frequently launched a large fraction of particles high");
     }
 
+    void testThreeDimensionalReseedingPreservesParticleCount() {
+        FluidSimulator3D simulation;
+        simulation.Init(6, 9, 6, 0.6f);
+        std::size_t const initialParticleCount = simulation.particles.size();
+
+        for (int step = 0; step < 30; ++step)
+            simulation.Step();
+
+        require(
+            simulation.particles.size() == initialParticleCount,
+            "3D particle reseeding changed the marker count");
+        require(
+            std::all_of(
+                simulation.particles.begin(),
+                simulation.particles.end(),
+                [](glm::vec3 const position) {
+                    return std::isfinite(position.x)
+                        && std::isfinite(position.y)
+                        && std::isfinite(position.z);
+                }),
+            "3D particle reseeding produced a non-finite position");
+    }
+
+    void testThreeDimensionalRigidContactDoesNotRebound() {
+        FluidSimulator3D simulation;
+        simulation.Init(10, 15, 10, 1.0f);
+        simulation.bodies.clear();
+
+        VCX::Labs::Final::RigidBody3D body;
+        body.radius   = 0.1f;
+        body.position = glm::vec3(
+            body.radius + simulation.dx * 0.05f,
+            0.5f,
+            0.5f);
+        body.velocity = glm::vec3(-1.0f, 0.75f, -0.5f);
+        body.ComputeMass();
+        simulation.bodies.push_back(body);
+
+        simulation.AdvanceBodies();
+
+        require(
+            std::abs(simulation.bodies[0].velocity.x) < 1e-6f,
+            "3D rigid tank contact reflected the normal velocity");
+        require(
+            std::abs(simulation.bodies[0].velocity.y - 0.75f) < 1e-6f
+                && std::abs(simulation.bodies[0].velocity.z + 0.5f) < 1e-6f,
+            "3D rigid tank contact damped tangential velocity");
+    }
+
     void testFreeSurfaceLongRunRemainsStable() {
         FreeSurfaceScenarioMetrics const metrics =
             runFreeSurfaceScenario(180);
@@ -917,6 +968,8 @@ int main(int argc, char ** argv) {
         testVariationalTransferPreservesSubgridGeometry();
         testCoupledProjectionUsesUpdatedBodyVelocity();
         testTankPressureDoesNotPushRigidBody();
+        testThreeDimensionalReseedingPreservesParticleCount();
+        testThreeDimensionalRigidContactDoesNotRebound();
         testSuzanneMeshSDFCouplesToVariationalSolver();
         if (! quick) {
             testSubgridChannelPreservesHalfCellFlow();
