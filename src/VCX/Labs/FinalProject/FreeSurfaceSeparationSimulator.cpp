@@ -128,18 +128,12 @@ namespace VCX::Labs::Final {
     }
 
     bool FreeSurfaceSeparationSimulator::isWallSeparationCandidate(glm::ivec3 const & cell) const {
-        bool touchesSolid = false;
-        bool touchesAir   = false;
-
         for (FaceNeighbor const & side : FaceNeighbors) {
             glm::ivec3 const neighbor = cell + side.CellOffset;
-            if (isSolidCell(neighbor)) {
-                touchesSolid = true;
-            } else if (m_type[gridOffset(neighbor)] == EMPTY_CELL) {
-                touchesAir = true;
-            }
+            if (isSolidCell(neighbor))
+                return true;
         }
-        return touchesSolid && touchesAir;
+        return false;
     }
 
     void FreeSurfaceSeparationSimulator::solveIncompressibility(

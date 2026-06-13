@@ -254,25 +254,16 @@ namespace VCX::Labs::Final {
     }
 
     bool VariationalCoupledSimulator::isWallSeparationCandidate(glm::ivec3 const & cell) const {
-        bool touchesSolid = false;
-        bool touchesAir   = false;
-
         for (FaceNeighbor const & side : FaceNeighbors) {
             glm::ivec3 const face     = cell + side.FaceOffset;
-            glm::ivec3 const neighbor = cell + side.CellOffset;
             int const        faceIdx  = gridOffset(face);
             bool const       tankOpen = isTankFaceOpen(face, side.Direction);
             float const      boundaryWeight =
                 tankOpen ? 1.0f - _faceOpenFraction[side.Direction][faceIdx] : 1.0f;
             if (boundaryWeight > 1e-6f)
-                touchesSolid = true;
-            if (tankOpen
-                && isValidCell(neighbor)
-                && m_type[gridOffset(neighbor)] == EMPTY_CELL
-                && ! isSolidPressureCell(neighbor))
-                touchesAir = true;
+                return true;
         }
-        return touchesSolid && touchesAir;
+        return false;
     }
 
     glm::vec2 VariationalCoupledSimulator::estimateFaceFractions(

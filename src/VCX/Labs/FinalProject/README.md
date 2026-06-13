@@ -59,7 +59,7 @@ assets/shaders/flat.vert/frag  (刚体与网格模型渲染)
 
 `Free-surface Separation` 演示的 `Wall separation` 对应论文第 4 节。标准固壁条件会把壁面
 法向速度固定为零，使自由液面无法自然离墙。开启 `Wall Separation`
-后，仅把同时邻接固体和空气的流体格视为候选区域。active-set 对每个
+后，对所有有液体支撑的流体-固体边界施加非负边界压力约束。active-set 对每个
 候选壁面在 `p = 0` 的分离状态和无穿透接触状态之间切换，并检查
 `u dot n >= v_solid dot n` 以及接触冲量方向，允许流体离墙但禁止穿墙。单元测试覆盖负压释放、非穿透、非负接触压力和动态 active-set 收敛。
 
