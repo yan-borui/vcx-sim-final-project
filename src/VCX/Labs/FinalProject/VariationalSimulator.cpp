@@ -60,7 +60,6 @@ namespace VCX::Labs::Final {
                     if (v_normal < 0) {
                         // 只消除法向相对速度，不影响切向
                         m_particleVel[i] -= v_normal * n;
-                        m_particleVel[i] -= 1.2f * v_normal * n; 
                     }
                 }
             }
