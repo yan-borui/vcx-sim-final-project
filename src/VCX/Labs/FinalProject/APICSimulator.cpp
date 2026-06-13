@@ -25,10 +25,10 @@ namespace VCX::Labs::Final {
             int centerIdx = index2GridOffset(cellIndex);
             if (centerIdx >= 0 && centerIdx < m_iNumCells && m_type[centerIdx] == EMPTY_CELL) m_type[centerIdx] = FLUID_CELL;   
 
-            // 瀵筙锛孻锛孼涓変釜鏂瑰悜鍒嗗埆澶勭悊
+            // 分别处理 X、Y、Z 三个方向
             for (int dir = 0; dir < 3; dir++) {
                 glm::vec3 offset = glm::vec3(0.5f);
-                offset[dir] = 0.0f; // 鍙湪褰撳墠鏂瑰悜涓婂亸绉?
+                offset[dir] = 0.0f; // 只在当前方向上偏移
                 glm::vec3 f_idx = (xp + glm::vec3(0.5f) - offset * m_h) * m_fInvSpacing;
                 glm::ivec3 baseIdx = glm::ivec3(floor(f_idx));
                 glm::vec3 delta = f_idx - glm::vec3(baseIdx);
@@ -76,27 +76,27 @@ namespace VCX::Labs::Final {
                         }
                     }
 
-                    m_particleVel[p][dir] = newV_dir; // 鏇存柊绮掑瓙閫熷害
-                    m_particleC[p][dir] = newC_dir * (4.0f * m_fInvSpacing * m_fInvSpacing); // 鏇存柊 APIC C
+                    m_particleVel[p][dir] = newV_dir; // 更新粒子速度
+                    m_particleC[p][dir] = newC_dir * (4.0f * m_fInvSpacing * m_fInvSpacing); // 更新 APIC C
                 }
             }
         }
 
         if (toGrid) {
-            // 褰掍竴鍖栫綉鏍奸€熷害
+            // 对网格速度做归一化
             for (int i = 0; i < m_iNumCells; i++) {
                 for (int dir = 0; dir < 3; dir++) {
                     if (m_near_num[dir][i] > 0.0f) {
                         if (isValidVelocity(i % m_iCellX, (i / m_iCellX) % m_iCellY, i / (m_iCellX * m_iCellY), dir)) {
                             m_vel[i][dir] /= m_near_num[dir][i];
                         } else {
-                            m_vel[i][dir] = 0.0f; // 娌℃湁鏈夋晥娴佷綋閭诲眳锛岄€熷害璁句负0
+                            m_vel[i][dir] = 0.0f; // 没有有效流体邻居时，速度设为 0
                         }
                     }
                 }
             }
             extrapolateGridVelocities(2);
-            m_pre_vel = m_vel; // 淇濆瓨褰撳墠缃戞牸閫熷害鐢ㄤ簬涓嬩竴娆¤绠梫_delta
+            m_pre_vel = m_vel; // 保存当前网格速度，用于下一次计算 delta
         }
     }
 
