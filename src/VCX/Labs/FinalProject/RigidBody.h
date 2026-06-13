@@ -119,10 +119,16 @@ namespace VCX::Labs::Final {
             }
 
             if (shape == ShapeType::Mesh && meshSDF && meshSDF->IsValid()) {
-                float const radius = 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
-                float const I      = 0.4f * mass * radius * radius;
-                float const invI   = I > 1e-6f ? 1.0f / I : 0.0f;
-                inertiaLocalInv    = glm::mat3(invI);
+                float const x2 = dim.x * dim.x;
+                float const y2 = dim.y * dim.y;
+                float const z2 = dim.z * dim.z;
+                float       ix = (1.0f / 12.0f) * mass * (y2 + z2);
+                float       iy = (1.0f / 12.0f) * mass * (x2 + z2);
+                float       iz = (1.0f / 12.0f) * mass * (x2 + y2);
+                ix             = std::max(ix, 1e-6f);
+                iy             = std::max(iy, 1e-6f);
+                iz             = std::max(iz, 1e-6f);
+                inertiaLocalInv = glm::inverse(glm::mat3(ix, 0, 0, 0, iy, 0, 0, 0, iz));
                 return;
             }
 
