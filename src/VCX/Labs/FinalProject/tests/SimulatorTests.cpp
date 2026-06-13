@@ -276,6 +276,48 @@ namespace {
             "negative wall pressure must classify at least one wall face as separating");
     }
 
+    template<typename Simulation>
+    void prepareBuriedWallPatch(Simulation & simulation) {
+        simulation.setupScene(8);
+        std::fill(simulation.m_type.begin(), simulation.m_type.end(), Simulator::EMPTY_CELL);
+        std::fill(simulation.m_vel.begin(), simulation.m_vel.end(), glm::vec3(0.0f));
+
+        std::vector<glm::vec3> particles;
+        for (int x = 1; x <= 3; ++x) {
+            for (int y = 2; y <= 4; ++y) {
+                for (int z = 2; z <= 4; ++z) {
+                    glm::ivec3 const cell { x, y, z };
+                    simulation.m_type[offset(simulation, cell)] = Simulator::FLUID_CELL;
+                    particles.push_back(
+                        (glm::vec3(cell) + glm::vec3(0.5f)) * simulation.m_h
+                        - glm::vec3(0.5f));
+                }
+            }
+        }
+
+        simulation.m_iNumSpheres = int(particles.size());
+        simulation.m_particlePos = std::move(particles);
+        simulation.m_particleVel.assign(
+            simulation.m_iNumSpheres,
+            glm::vec3(0.0f));
+
+        glm::ivec3 const buriedWallCell { 1, 3, 3 };
+        simulation.m_vel[offset(simulation, buriedWallCell)].x = 1.0f;
+    }
+
+    void testBuriedWetWallCanSeparate() {
+        FreeSurfaceSeparationSimulator simulation;
+        prepareBuriedWallPatch(simulation);
+        simulation.enableWallSeparation = true;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        glm::ivec3 const buriedWallCell { 1, 3, 3 };
+        require(
+            simulation.m_vel[offset(simulation, buriedWallCell)].x > 1e-4f,
+            "a wet wall face must allow separation without an adjacent air cell");
+    }
+
     void testGhostFluidUsesInterfaceDistance() {
         FreeSurfaceSeparationSimulator simulation;
         simulation.setupScene(8);
@@ -499,6 +541,30 @@ namespace {
             "rigid collision incorrectly removed tangential velocity");
     }
 
+    void testTankCollisionDoesNotRebound() {
+        Simulator simulation;
+        simulation.setupScene(8);
+
+        float const minBound = -0.5f + simulation.m_h;
+        simulation.m_iNumSpheres = 1;
+        simulation.m_particlePos.assign(
+            1,
+            glm::vec3(minBound - 0.01f, 0.0f, 0.0f));
+        simulation.m_particleVel.assign(
+            1,
+            glm::vec3(-1.0f, 0.75f, -0.5f));
+
+        simulation.handleParticleCollisions();
+
+        require(
+            std::abs(simulation.m_particleVel[0].x) < 1e-6f,
+            "tank contact must remove outward normal velocity without rebound");
+        require(
+            std::abs(simulation.m_particleVel[0].y - 0.75f) < 1e-6f
+                && std::abs(simulation.m_particleVel[0].z + 0.5f) < 1e-6f,
+            "tank contact must preserve tangential particle velocity");
+    }
+
     void prepareSingleCoupledWallCell(
         VariationalCoupledSimulator & simulation,
         float                         wallVelocity) {
@@ -541,6 +607,19 @@ namespace {
         require(
             simulation.m_vel[offset(simulation, fluidCell)].x > 1e-4f,
             "coupled solver must release negative-pressure wall suction");
+    }
+
+    void testCoupledBuriedWetWallCanSeparate() {
+        VariationalCoupledSimulator simulation;
+        prepareBuriedWallPatch(simulation);
+        simulation.enableWallSeparation = true;
+
+        simulation.solveIncompressibility(200, 0.01f, 1.0f, false);
+
+        glm::ivec3 const buriedWallCell { 1, 3, 3 };
+        require(
+            simulation.m_vel[offset(simulation, buriedWallCell)].x > 1e-4f,
+            "coupled wet wall must separate without an adjacent air cell");
     }
 
     void prepareSingleBodyWallCell(
@@ -800,11 +879,14 @@ int main(int argc, char ** argv) {
         testOutwardWallSeparation();
         testInwardWallContact();
         testNegativeWallPressureSeparates();
+        testBuriedWetWallCanSeparate();
         testGhostFluidUsesInterfaceDistance();
         testWallSeparationActiveSetConverges();
         testRigidCollisionPreservesTangentialVelocity();
+        testTankCollisionDoesNotRebound();
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
+        testCoupledBuriedWetWallCanSeparate();
         testCoupledMovingBodyContactAndSeparation();
         testCoupledCutFaceWithoutSolidCellCenter();
         testVariationalTransferPreservesSubgridGeometry();

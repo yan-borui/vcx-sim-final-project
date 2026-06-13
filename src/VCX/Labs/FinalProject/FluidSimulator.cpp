@@ -159,11 +159,13 @@ namespace VCX::Labs::Final {
             for (int d = 0; d < 3; ++d) {
                 if (m_particlePos[i][d] < minBound) { 
                     m_particlePos[i][d] = minBound; 
-                    if (m_particleVel[i][d] < 0) m_particleVel[i][d] *= -0.1f;
+                    if (m_particleVel[i][d] < 0)
+                        m_particleVel[i][d] = 0.0f;
                 }
                 if (m_particlePos[i][d] > maxBound) { 
                     m_particlePos[i][d] = maxBound; 
-                    if (m_particleVel[i][d] > 0) m_particleVel[i][d] *= -0.1f;
+                    if (m_particleVel[i][d] > 0)
+                        m_particleVel[i][d] = 0.0f;
                 }
             }
 
