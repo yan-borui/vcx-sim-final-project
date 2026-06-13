@@ -284,7 +284,7 @@ namespace VCX::Labs::Final {
                 
                     int neighbors[6][3] = {{i-1,j,k}, {i+1,j,k}, {i,j-1,k}, {i,j+1,k}, {i,j,k-1}, {i,j,k+1}};
                     int dirs[6] = {0, 0, 1, 1, 2, 2};
-                    int faceIdx[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j+1,k}};
+                    int faceIdx[6][3] = {{i,j,k}, {i+1,j,k}, {i,j,k}, {i,j+1,k}, {i,j,k}, {i,j,k+1}};
 
                     for (int m = 0; m < 6; m++) {
                         float w = getFaceWeight(faceIdx[m][0], faceIdx[m][1], faceIdx[m][2], dirs[m]);
