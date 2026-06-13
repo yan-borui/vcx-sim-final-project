@@ -219,5 +219,32 @@ namespace VCX::Labs::Final {
                 return 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
             return 0.5f * std::max(dim.x, std::max(dim.y, dim.z));
         }
+
+        glm::vec3 BoundingHalfExtents() const {
+            if (shape == ShapeType::Sphere)
+                return glm::vec3(0.5f * dim.x);
+
+            glm::mat3 const rotation = glm::mat3_cast(orientation);
+            glm::vec3 const halfDim  = 0.5f * dim;
+            return glm::abs(rotation[0]) * halfDim.x
+                + glm::abs(rotation[1]) * halfDim.y
+                + glm::abs(rotation[2]) * halfDim.z;
+        }
+
+        void ResolveTankContact(float minBound, float maxBound) {
+            glm::vec3 const halfExtents = BoundingHalfExtents();
+            for (int axis = 0; axis < 3; ++axis) {
+                if (position[axis] - halfExtents[axis] < minBound) {
+                    position[axis] = minBound + halfExtents[axis];
+                    if (velocity[axis] < 0.0f)
+                        velocity[axis] = 0.0f;
+                }
+                if (position[axis] + halfExtents[axis] > maxBound) {
+                    position[axis] = maxBound - halfExtents[axis];
+                    if (velocity[axis] > 0.0f)
+                        velocity[axis] = 0.0f;
+                }
+            }
+        }
     };
 } // namespace VCX::Labs::Final

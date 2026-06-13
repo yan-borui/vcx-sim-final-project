@@ -79,22 +79,7 @@ namespace {
                     glm::normalize(glm::angleAxis(angle, axis) * body.orientation);
             }
 
-            float const boundRadius = body.BoundingRadius();
-            for (int direction = 0; direction < 3; ++direction) {
-                if (body.position[direction] - boundRadius < -0.5f) {
-                    body.position[direction] = -0.5f + boundRadius;
-                    body.velocity[direction] *= -0.5f;
-                }
-                if (body.position[direction] + boundRadius > 0.5f) {
-                    body.position[direction] = 0.5f - boundRadius;
-                    body.velocity[direction] *= -0.5f;
-                }
-            }
-
-            if (body.position.y < 0.1f) {
-                body.velocity *= 0.96f;
-                body.angularVelocity *= 0.95f;
-            }
+            body.ResolveTankContact(-0.5f, 0.5f);
 
             body.velocity += glm::vec3(0.0f, -9.81f, 0.0f) * dt;
 
@@ -565,6 +550,29 @@ namespace {
             "tank contact must preserve tangential particle velocity");
     }
 
+    void testRigidTankContactDoesNotRebound() {
+        RigidBody body;
+        body.Reset(
+            { -0.45f, 0.0f, 0.0f },
+            { -2.0f, 0.75f, -0.5f },
+            { 0.2f, 0.3f, 0.4f },
+            1.0f,
+            { 1.0f, 1.0f, 1.0f });
+
+        body.ResolveTankContact(-0.5f, 0.5f);
+
+        require(
+            body.position.x - body.BoundingHalfExtents().x >= -0.500001f,
+            "rigid tank contact left the body outside the container");
+        require(
+            std::abs(body.velocity.x) < 1e-6f,
+            "rigid tank contact must not rebound from the wall");
+        require(
+            std::abs(body.velocity.y - 0.75f) < 1e-6f
+                && std::abs(body.velocity.z + 0.5f) < 1e-6f,
+            "rigid tank contact must preserve tangential velocity");
+    }
+
     void prepareSingleCoupledWallCell(
         VariationalCoupledSimulator & simulation,
         float                         wallVelocity) {
@@ -884,6 +892,7 @@ int main(int argc, char ** argv) {
         testWallSeparationActiveSetConverges();
         testRigidCollisionPreservesTangentialVelocity();
         testTankCollisionDoesNotRebound();
+        testRigidTankContactDoesNotRebound();
         testCoupledWallSeparation();
         testCoupledNegativeWallPressureSeparates();
         testCoupledBuriedWetWallCanSeparate();

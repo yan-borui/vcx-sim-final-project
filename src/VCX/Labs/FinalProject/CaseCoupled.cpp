@@ -195,22 +195,7 @@ namespace VCX::Labs::FluidSimulation {
                     glm::normalize(glm::angleAxis(angle, axis) * _body.orientation);
             }
 
-            float const boundRadius = _body.BoundingRadius();
-            for (int direction = 0; direction < 3; ++direction) {
-                if (_body.position[direction] - boundRadius < -0.5f) {
-                    _body.position[direction] = -0.5f + boundRadius;
-                    _body.velocity[direction] *= -0.5f;
-                }
-                if (_body.position[direction] + boundRadius > 0.5f) {
-                    _body.position[direction] = 0.5f - boundRadius;
-                    _body.velocity[direction] *= -0.5f;
-                }
-            }
-
-            if (_body.position.y < 0.1f) {
-                _body.velocity *= 0.96f;
-                _body.angularVelocity *= 0.95f;
-            }
+            _body.ResolveTankContact(-0.5f, 0.5f);
 
             _body.velocity += glm::vec3(0.0f, -9.81f, 0.0f) * _dt;
 
