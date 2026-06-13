@@ -182,6 +182,8 @@ namespace VCX::Labs::Final {
         wallSeparationSpeedResidual = 0.0f;
         maximumBoundaryPressure     = 0.0f;
         wallSeparationIterations    = 0;
+        wallSeparationCandidateCount = 0;
+        _wallPressureWarmStart.clear();
         pressureSolveSucceeded      = true;
     }
 
@@ -487,6 +489,15 @@ namespace VCX::Labs::Final {
             else
                 wallFace.UnconstrainedIndex = unconstrainedCount++;
         }
+        wallSeparationCandidateCount = candidateCount;
+        std::vector<std::uint64_t> candidateKeys(candidateCount);
+        for (WallFace const & wallFace : wallFaces) {
+            if (! wallFace.Candidate)
+                continue;
+            candidateKeys[wallFace.CandidateIndex] =
+                (std::uint64_t(std::uint32_t(wallFace.FaceIndex)) << 2)
+                | std::uint64_t(wallFace.Direction);
+        }
 
         std::vector<char> pinnedRows(pressureCount, 0);
         std::vector<char> visitedRows(pressureCount, 0);
@@ -754,10 +765,6 @@ namespace VCX::Labs::Final {
         }
 
         Eigen::VectorXd solvedRhsY = solveUnconstrained(rhsY);
-        Eigen::MatrixXd solvedYZ =
-            candidateCount > 0
-            ? solveUnconstrained(fullYZ)
-            : Eigen::MatrixXd(unconstrainedCount, 0);
 
         Eigen::VectorXd candidatePressure =
             Eigen::VectorXd::Zero(candidateCount);
@@ -765,29 +772,310 @@ namespace VCX::Labs::Final {
             Eigen::VectorXd::Zero(candidateCount);
         bool qpConverged = true;
         if (candidateCount > 0) {
-            // Eliminate unconstrained fluid/interior-wall pressures. The
-            // remaining nonnegative boundary pressures form the paper's LCP.
-            Eigen::MatrixXd reducedHessian =
-                fullZZ - fullYZ.transpose() * solvedYZ;
-            reducedHessian =
-                0.5 * (reducedHessian + reducedHessian.transpose());
             Eigen::VectorXd reducedRhs =
                 rhsZ - fullYZ.transpose() * solvedRhsY;
 
-            BoundQpResult qpResult =
-                solveNonnegativeQuadratic(reducedHessian, reducedRhs);
-            candidatePressure       = std::move(qpResult.Pressure);
-            reducedGradient         = std::move(qpResult.Gradient);
-            wallSeparationIterations = qpResult.Sweeps;
-            qpConverged              = qpResult.Converged;
+            if (candidateCount <= 64) {
+                // Small systems are fastest with the exact dense Schur
+                // complement and active-set solve.
+                Eigen::MatrixXd solvedYZ = solveUnconstrained(fullYZ);
+                Eigen::MatrixXd reducedHessian =
+                    fullZZ - fullYZ.transpose() * solvedYZ;
+                reducedHessian =
+                    0.5 * (reducedHessian + reducedHessian.transpose());
+
+                BoundQpResult qpResult =
+                    solveNonnegativeQuadratic(reducedHessian, reducedRhs);
+                candidatePressure        = std::move(qpResult.Pressure);
+                reducedGradient          = std::move(qpResult.Gradient);
+                wallSeparationIterations = qpResult.Sweeps;
+                qpConverged              = qpResult.Converged;
+            } else {
+                // Avoid one sparse solve per boundary face. Applying the
+                // reduced Hessian matrix-free preserves the same QP:
+                // Hq = Azz*q - Azy*Ayy^-1*Ayz*q.
+                auto applyReducedHessian =
+                    [&](Eigen::VectorXd const & value) {
+                        Eigen::VectorXd const eliminated =
+                            solveUnconstrained(fullYZ * value);
+                        Eigen::VectorXd result =
+                            fullZZ * value
+                            - fullYZ.transpose() * eliminated;
+                        return result;
+                    };
+
+                Eigen::VectorXd diagonal =
+                    fullZZ.diagonal().cwiseMax(1e-8);
+                Eigen::VectorXd const scaling = diagonal.cwiseSqrt();
+                Eigen::MatrixXd normalizedUpper = fullZZ;
+                normalizedUpper.array().colwise() /= scaling.array();
+                normalizedUpper.array().rowwise() /=
+                    scaling.transpose().array();
+                double const lipschitz = std::max(
+                    normalizedUpper.cwiseAbs().rowwise().sum().maxCoeff(),
+                    1e-8);
+                Eigen::VectorXd const scaledRhs =
+                    (reducedRhs.array() / scaling.array()).matrix();
+                auto applyScaledHessian =
+                    [&](Eigen::VectorXd const & value) {
+                        Eigen::VectorXd const pressure =
+                            (value.array() / scaling.array()).matrix();
+                        Eigen::VectorXd result =
+                            (applyReducedHessian(pressure).array()
+                             / scaling.array())
+                                .matrix();
+                        return result;
+                    };
+
+                candidatePressure =
+                    (reducedRhs.array() / diagonal.array())
+                        .max(0.0)
+                        .matrix();
+                for (int index = 0; index < candidateCount; ++index) {
+                    auto const previous =
+                        _wallPressureWarmStart.find(candidateKeys[index]);
+                    if (previous != _wallPressureWarmStart.end())
+                        candidatePressure[index] =
+                            std::max(previous->second, 0.0);
+                }
+                Eigen::VectorXd scaledPressure =
+                    (candidatePressure.array() * scaling.array()).matrix();
+                constexpr double MatrixFreeKktTolerance = 1e-6;
+                qpConverged = false;
+                std::vector<char> freeVariables(candidateCount, 0);
+                for (int index = 0; index < candidateCount; ++index) {
+                    freeVariables[index] =
+                        candidatePressure[index] > MatrixFreeKktTolerance
+                        || reducedRhs[index] > MatrixFreeKktTolerance;
+                }
+
+                std::unordered_set<std::size_t> visitedSets;
+                int hessianApplications = 0;
+                for (int activeSetIteration = 0;
+                     activeSetIteration < 64;
+                     ++activeSetIteration) {
+                    std::size_t signature = 1469598103934665603ull;
+                    int         freeCount = 0;
+                    for (char const isFree : freeVariables) {
+                        signature ^= std::size_t(isFree);
+                        signature *= 1099511628211ull;
+                        freeCount += isFree ? 1 : 0;
+                    }
+                    if (! visitedSets.insert(signature).second)
+                        break;
+
+                    scaledPressure =
+                        (candidatePressure.array() * scaling.array()).matrix();
+                    Eigen::VectorXd freeRhs = scaledRhs;
+                    for (int index = 0; index < candidateCount; ++index) {
+                        if (! freeVariables[index]) {
+                            scaledPressure[index] = 0.0;
+                            freeRhs[index]        = 0.0;
+                        }
+                    }
+
+                    auto applyFreeHessian =
+                        [&](Eigen::VectorXd const & value) {
+                            Eigen::VectorXd freeValue = value;
+                            for (int index = 0; index < candidateCount; ++index) {
+                                if (! freeVariables[index])
+                                    freeValue[index] = 0.0;
+                            }
+                            Eigen::VectorXd result =
+                                applyScaledHessian(freeValue);
+                            ++hessianApplications;
+                            for (int index = 0; index < candidateCount; ++index) {
+                                if (! freeVariables[index])
+                                    result[index] = 0.0;
+                            }
+                            return result;
+                        };
+
+                    if (freeCount > 0) {
+                        Eigen::VectorXd residual =
+                            freeRhs - applyFreeHessian(scaledPressure);
+                        Eigen::VectorXd direction = residual;
+                        double residualSquared = residual.squaredNorm();
+                        int const maximumCgIterations =
+                            std::min(512, 2 * freeCount + 32);
+                        for (int cgIteration = 0;
+                             cgIteration < maximumCgIterations
+                             && residualSquared > 1e-28;
+                             ++cgIteration) {
+                            Eigen::VectorXd const hessianDirection =
+                                applyFreeHessian(direction);
+                            double const curvature =
+                                direction.dot(hessianDirection);
+                            if (! std::isfinite(curvature)
+                                || curvature <= 1e-18)
+                                break;
+
+                            double const step = residualSquared / curvature;
+                            scaledPressure.noalias() += step * direction;
+                            residual.noalias() -= step * hessianDirection;
+                            if (! scaledPressure.allFinite()
+                                || ! residual.allFinite())
+                                break;
+
+                            double const kktResidual =
+                                (scaling.array() * residual.array())
+                                    .abs()
+                                    .maxCoeff();
+                            if (kktResidual <= MatrixFreeKktTolerance)
+                                break;
+
+                            double const nextResidualSquared =
+                                residual.squaredNorm();
+                            direction =
+                                residual
+                                + (nextResidualSquared / residualSquared)
+                                    * direction;
+                            residualSquared = nextResidualSquared;
+                        }
+                    } else {
+                        scaledPressure.setZero();
+                    }
+
+                    Eigen::VectorXd trialPressure =
+                        (scaledPressure.array() / scaling.array()).matrix();
+                    bool removedNegativePressure = false;
+                    for (int index = 0; index < candidateCount; ++index) {
+                        if (freeVariables[index]
+                            && trialPressure[index]
+                                < -MatrixFreeKktTolerance) {
+                            freeVariables[index] = 0;
+                            candidatePressure[index] = 0.0;
+                            removedNegativePressure = true;
+                        } else if (freeVariables[index]) {
+                            candidatePressure[index] =
+                                std::max(trialPressure[index], 0.0);
+                        } else {
+                            candidatePressure[index] = 0.0;
+                        }
+                    }
+                    if (removedNegativePressure)
+                        continue;
+
+                    reducedGradient =
+                        applyReducedHessian(candidatePressure) - reducedRhs;
+                    ++hessianApplications;
+                    if (! reducedGradient.allFinite())
+                        break;
+
+                    bool   releasedConstraint = false;
+                    double kktResidual        = 0.0;
+                    for (int index = 0; index < candidateCount; ++index) {
+                        if (! freeVariables[index]
+                            && reducedGradient[index]
+                                < -MatrixFreeKktTolerance) {
+                            freeVariables[index] = 1;
+                            releasedConstraint   = true;
+                        }
+                        double const violation =
+                            candidatePressure[index]
+                                    > MatrixFreeKktTolerance
+                            ? std::abs(reducedGradient[index])
+                            : std::max(-reducedGradient[index], 0.0);
+                        kktResidual = std::max(kktResidual, violation);
+                    }
+                    if (! releasedConstraint
+                        && kktResidual <= MatrixFreeKktTolerance) {
+                        qpConverged = true;
+                        break;
+                    }
+                }
+                if (! qpConverged) {
+                    scaledPressure =
+                        (candidatePressure.array() * scaling.array()).matrix();
+                    Eigen::VectorXd accelerated = scaledPressure;
+                    double          momentum     = 1.0;
+                    int const maximumIterations =
+                        std::min(2000, 8 * candidateCount + 128);
+                    for (int iteration = 0;
+                         iteration < maximumIterations;
+                         ++iteration) {
+                        Eigen::VectorXd const acceleratedGradient =
+                            applyScaledHessian(accelerated) - scaledRhs;
+                        ++hessianApplications;
+                        Eigen::VectorXd const nextScaledPressure =
+                            (accelerated.array()
+                             - acceleratedGradient.array() / lipschitz)
+                                .max(0.0)
+                                .matrix();
+                        if (! acceleratedGradient.allFinite()
+                            || ! nextScaledPressure.allFinite())
+                            break;
+
+                        if ((iteration + 1) % 4 == 0
+                            || iteration + 1 == maximumIterations) {
+                            candidatePressure =
+                                (nextScaledPressure.array() / scaling.array())
+                                    .matrix();
+                            reducedGradient =
+                                applyReducedHessian(candidatePressure)
+                                - reducedRhs;
+                            ++hessianApplications;
+                            if (! reducedGradient.allFinite())
+                                break;
+                            double kktResidual = 0.0;
+                            for (int index = 0; index < candidateCount; ++index) {
+                                double const violation =
+                                    candidatePressure[index]
+                                            > MatrixFreeKktTolerance
+                                    ? std::abs(reducedGradient[index])
+                                    : std::max(-reducedGradient[index], 0.0);
+                                kktResidual =
+                                    std::max(kktResidual, violation);
+                            }
+                            if (kktResidual <= MatrixFreeKktTolerance) {
+                                qpConverged = true;
+                                break;
+                            }
+                        }
+
+                        double const nextMomentum =
+                            0.5 * (1.0 + std::sqrt(
+                                1.0 + 4.0 * momentum * momentum));
+                        Eigen::VectorXd nextAccelerated =
+                            nextScaledPressure
+                            + ((momentum - 1.0) / nextMomentum)
+                                * (nextScaledPressure - scaledPressure);
+                        if ((accelerated - nextScaledPressure).dot(
+                                nextScaledPressure - scaledPressure)
+                            > 0.0) {
+                            nextAccelerated = nextScaledPressure;
+                            momentum        = 1.0;
+                        } else {
+                            momentum = nextMomentum;
+                        }
+                        scaledPressure = nextScaledPressure;
+                        accelerated    = std::move(nextAccelerated);
+                    }
+
+                    if (! qpConverged) {
+                        candidatePressure =
+                            (scaledPressure.array() / scaling.array()).matrix();
+                        reducedGradient =
+                            applyReducedHessian(candidatePressure) - reducedRhs;
+                        ++hessianApplications;
+                    }
+                }
+                wallSeparationIterations = hessianApplications;
+            }
         } else {
             wallSeparationIterations = 1;
         }
 
+        _wallPressureWarmStart.clear();
+        _wallPressureWarmStart.reserve(candidateCount);
+        for (int index = 0; index < candidateCount; ++index)
+            _wallPressureWarmStart.emplace(
+                candidateKeys[index],
+                candidatePressure[index]);
+
         Eigen::VectorXd unconstrainedPressure = solveUnconstrained(
             rhsY - fullYZ * candidatePressure);
-        if (! qpConverged
-            || ! unconstrainedPressure.allFinite()
+        if (! unconstrainedPressure.allFinite()
             || ! candidatePressure.allFinite()) {
             pressureSolveSucceeded = false;
             pressureResidual = std::numeric_limits<float>::infinity();

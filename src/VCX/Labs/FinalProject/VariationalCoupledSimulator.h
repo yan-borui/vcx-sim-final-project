@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
+#include <unordered_map>
 
 #include "Labs/FinalProject/FluidSimulator.h"
 
@@ -15,6 +17,7 @@ namespace VCX::Labs::Final {
         float wallSeparationSpeedResidual = 0.0f;
         float maximumBoundaryPressure     = 0.0f;
         int   wallSeparationIterations    = 0;
+        int   wallSeparationCandidateCount = 0;
         bool  pressureSolveSucceeded      = true;
 
         void setupScene(int res) override;
@@ -36,6 +39,7 @@ namespace VCX::Labs::Final {
 
         std::array<std::vector<float>, 3> _faceOpenFraction;
         std::array<std::vector<float>, 3> _faceFluidFraction;
+        std::unordered_map<std::uint64_t, double> _wallPressureWarmStart;
 
         bool      isValidCell(glm::ivec3 const & cell) const;
         int       gridOffset(glm::ivec3 const & cell) const;

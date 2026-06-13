@@ -51,7 +51,7 @@ namespace {
         float MaxParticleSpeed   = 0.0f;
         float MaxParticleHeight  = 0.0f;
         float MaxFeedbackImpulse = 0.0f;
-        int    MaxKktSolves      = 0;
+        int    MaxQpApplications = 0;
         int    LargeSplashFrames = 0;
     };
 
@@ -98,7 +98,9 @@ namespace {
                     + std::to_string(simulation.wallSeparationQpResidual)
                     + ", max boundary pressure "
                     + std::to_string(simulation.maximumBoundaryPressure)
-                    + ", QP sweeps "
+                    + ", candidates "
+                    + std::to_string(simulation.wallSeparationCandidateCount)
+                    + ", QP operator applications "
                     + std::to_string(simulation.wallSeparationIterations));
             }
 
@@ -113,8 +115,8 @@ namespace {
             metrics.MaxFeedbackImpulse = std::max(
                 metrics.MaxFeedbackImpulse,
                 glm::length(simulation.m_feedbackForce) * dt);
-            metrics.MaxKktSolves = std::max(
-                metrics.MaxKktSolves,
+            metrics.MaxQpApplications = std::max(
+                metrics.MaxQpApplications,
                 simulation.wallSeparationIterations);
             for (glm::vec3 const velocity : simulation.m_particleVel)
                 metrics.MaxParticleSpeed =
@@ -789,6 +791,15 @@ namespace {
 
     void testDefaultCoupledScenarioRemainsStable() {
         CoupledScenarioMetrics const metrics = runDefaultCoupledScenario(240);
+        std::cout
+            << "Coupled metrics: max body speed=" << metrics.MaxBodySpeed
+            << ", max angular speed=" << metrics.MaxAngularSpeed
+            << ", max particle speed=" << metrics.MaxParticleSpeed
+            << ", max particle height=" << metrics.MaxParticleHeight
+            << ", large splash frames=" << metrics.LargeSplashFrames
+            << ", max QP operator applications="
+            << metrics.MaxQpApplications << '\n';
+
         require(
             metrics.MaxBodySpeed < 8.0f,
             "default coupled body gained excessive linear speed");
@@ -802,19 +813,11 @@ namespace {
             metrics.MaxFeedbackImpulse < 0.5f,
             "default coupled pressure feedback produced an excessive impulse");
         require(
-            metrics.MaxKktSolves < 16,
-            "default coupled wall-separation QP required too many active-set steps");
+            metrics.MaxQpApplications < 512,
+            "default coupled wall-separation QP required too many operator applications");
         require(
             metrics.LargeSplashFrames < 12,
             "default coupled scenario frequently launched a large fraction of particles high");
-
-        std::cout
-            << "Coupled metrics: max body speed=" << metrics.MaxBodySpeed
-            << ", max angular speed=" << metrics.MaxAngularSpeed
-            << ", max particle speed=" << metrics.MaxParticleSpeed
-            << ", max particle height=" << metrics.MaxParticleHeight
-            << ", large splash frames=" << metrics.LargeSplashFrames
-            << ", max QP sweeps=" << metrics.MaxKktSolves << '\n';
     }
 
     void testFreeSurfaceLongRunRemainsStable() {
@@ -863,9 +866,22 @@ namespace {
         simulation.setupScene(12);
         simulation.SimulateTimestep(0.008f);
 
-        require(
-            simulation.pressureSolveSucceeded,
-            "mesh coupled pressure solve failed");
+        if (! simulation.pressureSolveSucceeded) {
+            throw std::runtime_error(
+                "mesh coupled pressure solve failed: pressure residual "
+                + std::to_string(simulation.pressureResidual)
+                + ", KKT residual "
+                + std::to_string(simulation.wallSeparationKktResidual)
+                + " (speed "
+                + std::to_string(simulation.wallSeparationSpeedResidual)
+                + ", QP "
+                + std::to_string(simulation.wallSeparationQpResidual)
+                + ")"
+                + ", candidates "
+                + std::to_string(simulation.wallSeparationCandidateCount)
+                + ", iterations "
+                + std::to_string(simulation.wallSeparationIterations));
+        }
         require(
             std::isfinite(simulation.pressureResidual),
             "mesh coupled residual is not finite");
