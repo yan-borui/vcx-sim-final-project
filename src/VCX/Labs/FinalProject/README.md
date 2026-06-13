@@ -8,7 +8,7 @@ Simulator (基类，在 FluidSimulator.h/cpp)
 ├── SubgridSimulator  (在 SubgridSimulator.h/cpp)
 ├── FreeSurfaceSeparationSimulator (在 FreeSurfaceSeparationSimulator.h/cpp)
 ├── VariationalCoupledSimulator (在 VariationalCoupledSimulator.h/cpp)
-└── VariationalSimulator (在 VariationalSimulator.h/cpp)
+└── VariationalSimulator (独立演示，复用统一变分耦合核心)
 
 RigidBody (独立结构体，在 RigidBody.h)
 MeshSDF   (不规则三角网格 SDF，在 MeshSDF.h/cpp)
@@ -35,7 +35,7 @@ assets/shaders/flat.vert/frag  (刚体与网格模型渲染)
 | **SubgridSimulator.h/cpp** | Batty 论文的 MAC 面流体体积分数加权压力投影，保留小于单个网格的通道流动 |
 | **FreeSurfaceSeparationSimulator.h/cpp** | Batty 论文第 4 节壁面自然分离条件，使用 active-set 求解 KKT 互补条件 |
 | **VariationalCoupledSimulator.h/cpp** | 将切割面体积分数、自然分离约束和刚体反馈接入双向耦合 |
-| **VariationalSimulator.h/cpp** | 变分流固耦合：最小化系统动能，满足不可压与接触约束 |
+| **VariationalSimulator.h/cpp** | 独立变分演示入口，复用 `VariationalCoupledSimulator` 的统一动能最小化、子网格权重和壁面分离求解 |
 | **MeshSDF.h/cpp** | 不规则三角网格 SDF。使用 tinyobjloader 读取 OBJ，计算点到三角形距离和内外符号，并构建 32³ 距离场缓存以加速查询 |
 | **RigidBody.h** | 刚体定义（位置、速度、旋转、惯量、SDF 距离查询），支持 box、sphere、bunny-like 解析形状和 MeshSDF 不规则网格形状 |
 | **CaseCoupled.h/cpp** | 双向流固耦合的 UI、渲染和主循环，支持 Box/Sphere/suzanne 形状切换、APIC/CG 切换、压强可视化和鼠标外力交互 |

@@ -82,7 +82,7 @@ namespace VCX::Labs::FluidSimulation {
         const char* colorModes[] = { "Default", "Velocity", "Density", "Pressure" };
         int currentColorMode = static_cast<int>(_sim->m_colorMode);
         if (ImGui::Combo("Color Mode", &currentColorMode, colorModes, IM_ARRAYSIZE(colorModes))) {
-            _sim->m_colorMode = static_cast<Final::VariationalSimulator::ColorMode>(currentColorMode);
+            _sim->m_colorMode = static_cast<Final::Simulator::ColorMode>(currentColorMode);
         }
         ImGui::Separator();
         ImGui::Checkbox("separateParticles", &_sim->separateParticles);
@@ -103,9 +103,24 @@ namespace VCX::Labs::FluidSimulation {
         }
         
         if (! _stopped) {
+            _body.position += _body.velocity * _dt;
+            if (glm::length(_body.angularVelocity) > 0.001f) {
+                glm::vec3 const axis = glm::normalize(_body.angularVelocity);
+                float const angle = glm::length(_body.angularVelocity) * _dt;
+                _body.orientation =
+                    glm::normalize(glm::angleAxis(angle, axis) * _body.orientation);
+            }
+            _body.ResolveTankContact(-0.5f, 0.5f);
+            _body.velocity += _sim->gravity * _dt;
+
             _sim->m_boxPos = _body.position;
             _sim->m_boxDim = _body.dim;
             _sim->SimulateTimestep(_dt);
+
+            _body.velocity +=
+                _sim->m_feedbackForce / std::max(_body.mass, 1e-6f) * _dt;
+            _body.angularVelocity +=
+                _body.GetInertiaWorldInv() * _sim->m_feedbackTorque * _dt;
         }
 
         _frame.Resize(desiredSize);
@@ -211,12 +226,13 @@ namespace VCX::Labs::FluidSimulation {
     }
 
     void CaseVariation::ResetSystem(){
-        _sim = (Final::VariationalSimulator*)&_simulation;
-        
-        
+        _sim = &_simulation;
         _sim->setupScene(_res);
+        _sim->numSubSteps = 1;
+        _sim->numPressureIters = 120;
+        _sim->compensateDrift = false;
         std::fill(_sim->m_vel.begin(), _sim->m_vel.end(), glm::vec3(0.0f));
-    std::fill(_sim->m_pre_vel.begin(), _sim->m_pre_vel.end(), glm::vec3(0.0f));
+        std::fill(_sim->m_pre_vel.begin(), _sim->m_pre_vel.end(), glm::vec3(0.0f));
         _body.Reset({0, 0.3f, 0}, {0,0,0}, {0.3f, 0.3f, 0.3f}, 1.0f, {0.8f, 0.2f, 0.2f});
         _sim->m_body = &_body;
         numofSpheres = _sim->m_iNumSpheres;
