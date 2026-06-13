@@ -51,6 +51,7 @@ namespace VCX::Labs::FluidSimulation {
         bool                                _stopped { false };
         float                               _dt { 0.005f };
         Engine::Model                       _sphere;
+        std::optional<Rendering::ModelObject> _fluidParticles;
         int                                 _res { 24 };
         float                               _r;
         int                                 numofSpheres;

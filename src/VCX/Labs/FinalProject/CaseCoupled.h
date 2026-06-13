@@ -62,6 +62,7 @@ namespace VCX::Labs::FluidSimulation {
         bool                                _stopped { false };
         float                               _dt { 0.016f };
         Engine::Model                       _sphere;
+        std::optional<Rendering::ModelObject> _fluidParticles;
         Engine::Model                       _rigidSphere;
         int                                 _res { 16 };
         float                               _r           = 0.0f;

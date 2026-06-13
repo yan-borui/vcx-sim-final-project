@@ -159,11 +159,12 @@ namespace VCX::Labs::FluidSimulation {
         _boundaryItem.Draw({ _lineProgram.Use() });
         glLineWidth(1.0f);
 
-        Rendering::ModelObject particles(
-            _sphere, _simulation.m_particlePos, _simulation.m_particleColor);
+        _fluidParticles->UpdateInstances(
+            _simulation.m_particlePos,
+            _simulation.m_particleColor);
         _program.GetUniforms().SetByName("u_FluidProjection", projection);
         _program.GetUniforms().SetByName("u_FluidView", view);
-        particles.Mesh.Draw(
+        _fluidParticles->Mesh.Draw(
             { _program.Use() },
             _sphere.Mesh.Indices.size(),
             0,
@@ -206,5 +207,9 @@ namespace VCX::Labs::FluidSimulation {
         _simulation.m_body = &_body;
         _simulation.setupScene(_resolution);
         _sphere = Engine::Model(Engine::Sphere(6, _simulation.m_particleRadius));
+        _fluidParticles.emplace(
+            _sphere,
+            _simulation.m_particlePos,
+            _simulation.m_particleColor);
     }
 } // namespace VCX::Labs::FluidSimulation

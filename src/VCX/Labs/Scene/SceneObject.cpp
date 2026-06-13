@@ -64,8 +64,8 @@ namespace VCX::Labs::Rendering {
         Engine::GL::UniqueIndexedRenderItem item(Engine::GL::VertexLayout()
                 .Add<glm::vec3>("position", Engine::GL::DrawFrequency::Static, 0)
                 .Add<glm::vec3>("normal", Engine::GL::DrawFrequency::Static, 1)
-                .Add<glm::vec3>("offset", Engine::GL::DrawFrequency::Static, 2)
-                .Add<glm::vec3>("color", Engine::GL::DrawFrequency::Static, 3),
+                .Add<glm::vec3>("offset", Engine::GL::DrawFrequency::Stream, 2)
+                .Add<glm::vec3>("color", Engine::GL::DrawFrequency::Stream, 3),
             Engine::GL::PrimitiveType::Triangles);
         item.UpdateVertexBuffer("position", Engine::make_span_bytes<glm::vec3>(mesh.Positions));
         item.UpdateVertexBuffer("normal", Engine::make_span_bytes<glm::vec3>(mesh.IsNormalAvailable() ? mesh.Normals : mesh.ComputeNormals()));
@@ -90,6 +90,17 @@ namespace VCX::Labs::Rendering {
     ModelObject::ModelObject(Engine::Model const& model,const std::vector<glm::vec3>& offset, const std::vector<glm::vec3>& color) :
         Mesh(MakeInstanceRenderItemwithColor(model.Mesh, offset,color)), 
         MaterialIndex(model.MaterialIndex){
+    }
+
+    void ModelObject::UpdateInstances(
+        std::vector<glm::vec3> const & offsets,
+        std::vector<glm::vec3> const & colors) {
+        Mesh.UpdateVertexBuffer(
+            "offset",
+            Engine::make_span_bytes<glm::vec3>(offsets));
+        Mesh.UpdateVertexBuffer(
+            "color",
+            Engine::make_span_bytes<glm::vec3>(colors));
     }
 
     void SceneObject::ReplaceScene(Engine::Scene const & scene) {

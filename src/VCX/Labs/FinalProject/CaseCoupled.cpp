@@ -264,11 +264,13 @@ namespace VCX::Labs::FluidSimulation {
             _program.GetUniforms().SetByName("u_BumpMappingBlend", _bumpMappingPercent * .01f);
         }
 
-        Rendering::ModelObject fluidParticles = Rendering::ModelObject(_sphere, _sim->m_particlePos, _sim->m_particleColor);
+        _fluidParticles->UpdateInstances(
+            _sim->m_particlePos,
+            _sim->m_particleColor);
         auto const &           material       = _sceneObject.Materials[0];
         _program.GetUniforms().SetByName("u_FluidProjection", proj);
         _program.GetUniforms().SetByName("u_FluidView", view);
-        fluidParticles.Mesh.Draw(
+        _fluidParticles->Mesh.Draw(
             { material.Albedo.Use(), material.MetaSpec.Use(), material.Height.Use(), _program.Use() },
             _sphere.Mesh.Indices.size(),
             0,
@@ -382,6 +384,10 @@ namespace VCX::Labs::FluidSimulation {
         numofSpheres  = _sim->m_iNumSpheres;
         _r            = _sim->m_particleRadius;
         _sphere       = Engine::Model(Engine::Sphere(6, _r));
+        _fluidParticles.emplace(
+            _sphere,
+            _sim->m_particlePos,
+            _sim->m_particleColor);
         _rigidSphere  = Engine::Model(Engine::Sphere(20, 0.5f));
         _uniformDirty = true;
     }

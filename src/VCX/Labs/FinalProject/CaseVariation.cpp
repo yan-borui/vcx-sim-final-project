@@ -159,11 +159,13 @@ namespace VCX::Labs::FluidSimulation {
         }
         
         // Rendering::ModelObject m = Rendering::ModelObject(_sphere,_simulation.Positions);
-        Rendering::ModelObject m = Rendering::ModelObject(_sphere, _sim->m_particlePos, _sim->m_particleColor);
+        _fluidParticles->UpdateInstances(
+            _sim->m_particlePos,
+            _sim->m_particleColor);
         auto const & material    = _sceneObject.Materials[0];
         _program.GetUniforms().SetByName("u_FluidProjection", proj);
         _program.GetUniforms().SetByName("u_FluidView", view);
-        m.Mesh.Draw({ material.Albedo.Use(),  material.MetaSpec.Use(), material.Height.Use(),_program.Use() },
+        _fluidParticles->Mesh.Draw({ material.Albedo.Use(),  material.MetaSpec.Use(), material.Height.Use(),_program.Use() },
             _sphere.Mesh.Indices.size(), 0, _sim->m_iNumSpheres);
         
         _flatProgram.GetUniforms().SetByName("u_Projection", _sceneObject.Camera.GetProjectionMatrix((float(desiredSize.first) / desiredSize.second)));
@@ -238,5 +240,9 @@ namespace VCX::Labs::FluidSimulation {
         numofSpheres = _sim->m_iNumSpheres;
         _r = _sim->m_particleRadius; //cell size
         _sphere = Engine::Model(Engine::Sphere(6, _r));
+        _fluidParticles.emplace(
+            _sphere,
+            _sim->m_particlePos,
+            _sim->m_particleColor);
     }
 }

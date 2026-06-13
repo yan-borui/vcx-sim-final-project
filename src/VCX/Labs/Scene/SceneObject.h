@@ -28,6 +28,9 @@ namespace VCX::Labs::Rendering {
         explicit ModelObject(Engine::Model const& model);
         explicit ModelObject(Engine::Model const& model, const std::vector<glm::vec3>& offset);
         explicit ModelObject(Engine::Model const& model,const std::vector<glm::vec3>& offset, const std::vector<glm::vec3>& color); 
+        void UpdateInstances(
+            std::vector<glm::vec3> const & offsets,
+            std::vector<glm::vec3> const & colors);
     };
 
     struct SceneObject {

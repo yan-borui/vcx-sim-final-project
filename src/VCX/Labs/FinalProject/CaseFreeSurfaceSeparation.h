@@ -43,6 +43,7 @@ namespace VCX::Labs::FluidSimulation {
         int         _resolution { 24 };
 
         Engine::Model                         _sphere;
+        std::optional<Rendering::ModelObject>  _fluidParticles;
         Final::FreeSurfaceSeparationSimulator _simulation;
     };
 } // namespace VCX::Labs::FluidSimulation

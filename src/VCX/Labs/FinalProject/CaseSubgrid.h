@@ -44,6 +44,7 @@ namespace VCX::Labs::FluidSimulation {
         int         _resolution { 18 };
 
         Engine::Model           _sphere;
+        std::optional<Rendering::ModelObject> _fluidParticles;
         Final::SubgridSimulator _simulation;
         Final::RigidBody        _body;
     };
