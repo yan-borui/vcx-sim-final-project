@@ -293,6 +293,81 @@ namespace VCX::Labs::Final {
         }
     }
 
+    void Simulator::extrapolateGridVelocities(int layers) {
+        if (layers <= 0)
+            return;
+
+        constexpr glm::ivec3 NeighborOffsets[] = {
+            { -1,  0,  0 },
+            {  1,  0,  0 },
+            {  0, -1,  0 },
+            {  0,  1,  0 },
+            {  0,  0, -1 },
+            {  0,  0,  1 },
+        };
+
+        struct VelocityUpdate {
+            int   Index;
+            float Value;
+        };
+
+        for (int dir = 0; dir < 3; ++dir) {
+            std::vector<char> known(m_iNumCells, 0);
+            for (int idx = 0; idx < m_iNumCells; ++idx) {
+                glm::ivec3 const face {
+                    idx % m_iCellX,
+                    (idx / m_iCellX) % m_iCellY,
+                    idx / (m_iCellX * m_iCellY),
+                };
+                known[idx] =
+                    m_near_num[dir][idx] > 0.0f
+                    && isValidVelocity(face.x, face.y, face.z, dir);
+            }
+
+            for (int layer = 0; layer < layers; ++layer) {
+                std::vector<VelocityUpdate> updates;
+                for (int idx = 0; idx < m_iNumCells; ++idx) {
+                    if (known[idx])
+                        continue;
+
+                    glm::ivec3 const face {
+                        idx % m_iCellX,
+                        (idx / m_iCellX) % m_iCellY,
+                        idx / (m_iCellX * m_iCellY),
+                    };
+                    if (! isValidVelocity(face.x, face.y, face.z, dir))
+                        continue;
+
+                    float sum   = 0.0f;
+                    int   count = 0;
+                    for (glm::ivec3 const offset : NeighborOffsets) {
+                        glm::ivec3 const neighbor = face + offset;
+                        if (! isValidCell(neighbor))
+                            continue;
+                        int const neighborIdx = index2GridOffset(neighbor);
+                        if (! known[neighborIdx])
+                            continue;
+                        sum += m_vel[neighborIdx][dir];
+                        ++count;
+                    }
+                    if (count > 0) {
+                        updates.push_back(VelocityUpdate {
+                            .Index = idx,
+                            .Value = sum / float(count),
+                        });
+                    }
+                }
+
+                if (updates.empty())
+                    break;
+                for (VelocityUpdate const update : updates) {
+                    m_vel[update.Index][dir] = update.Value;
+                    known[update.Index]      = 1;
+                }
+            }
+        }
+    }
+
     void Simulator::transferVelocities(bool toGrid, float flipRatio) {
         if (toGrid) {
             rebuildSolidCellsFromBody();
@@ -381,6 +456,7 @@ namespace VCX::Labs::Final {
                     }
                 }
             }
+            extrapolateGridVelocities(2);
             m_pre_vel = m_vel; // 淇濆瓨褰撳墠缃戞牸閫熷害鐢ㄤ簬涓嬩竴娆¤绠梫_delta
         }
     }

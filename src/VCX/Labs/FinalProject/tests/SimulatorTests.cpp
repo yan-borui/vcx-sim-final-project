@@ -543,6 +543,46 @@ namespace {
             "rigid collision incorrectly removed tangential velocity");
     }
 
+    void testZeroMassVelocitySamplesAreExtrapolated() {
+        Simulator simulation;
+        simulation.setupScene(8);
+        std::fill(
+            simulation.m_type.begin(),
+            simulation.m_type.end(),
+            Simulator::EMPTY_CELL);
+        std::fill(
+            simulation.m_vel.begin(),
+            simulation.m_vel.end(),
+            glm::vec3(0.0f));
+        for (auto & weights : simulation.m_near_num)
+            std::fill(weights.begin(), weights.end(), 0.0f);
+
+        glm::ivec3 const sourceFace { 4, 4, 4 };
+        glm::ivec3 const targetFace { 4, 5, 4 };
+        glm::ivec3 const isolatedFace { 6, 6, 6 };
+        simulation.m_type[offset(simulation, { 4, 4, 4 })] =
+            Simulator::FLUID_CELL;
+        simulation.m_type[offset(simulation, { 4, 5, 4 })] =
+            Simulator::FLUID_CELL;
+        simulation.m_vel[offset(simulation, sourceFace)].x = 2.0f;
+        simulation.m_near_num[0][offset(simulation, sourceFace)] = 1.0f;
+
+        simulation.extrapolateGridVelocities(1);
+
+        require(
+            std::abs(simulation.m_vel[offset(simulation, sourceFace)].x - 2.0f)
+                < 1e-6f,
+            "velocity extrapolation changed a known MAC sample");
+        require(
+            std::abs(simulation.m_vel[offset(simulation, targetFace)].x - 2.0f)
+                < 1e-6f,
+            "zero-mass MAC sample next to fluid did not receive extrapolated velocity");
+        require(
+            std::abs(simulation.m_vel[offset(simulation, isolatedFace)].x)
+                < 1e-6f,
+            "velocity extrapolation crossed into a region without fluid support");
+    }
+
     void testTankCollisionDoesNotRebound() {
         Simulator simulation;
         simulation.setupScene(8);
@@ -1195,6 +1235,7 @@ int main(int argc, char ** argv) {
         testBuriedWetWallCanSeparate();
         testGhostFluidUsesInterfaceDistance();
         testWallSeparationActiveSetConverges();
+        testZeroMassVelocitySamplesAreExtrapolated();
         testRigidCollisionPreservesTangentialVelocity();
         testTankCollisionDoesNotRebound();
         testRigidTankContactDoesNotRebound();

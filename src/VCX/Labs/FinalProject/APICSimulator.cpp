@@ -95,6 +95,7 @@ namespace VCX::Labs::Final {
                     }
                 }
             }
+            extrapolateGridVelocities(2);
             m_pre_vel = m_vel; // 淇濆瓨褰撳墠缃戞牸閫熷害鐢ㄤ簬涓嬩竴娆¤绠梫_delta
         }
     }

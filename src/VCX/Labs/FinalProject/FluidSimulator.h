@@ -77,6 +77,7 @@ namespace VCX::Labs::Final {
         void pushParticlesApart(int numIters);
         void handleParticleCollisions();
         void updateParticleDensity();
+        void extrapolateGridVelocities(int layers);
         std::vector<float> buildParticleLevelSet() const;
         float sampleCellCenteredField(
             std::vector<float> const & field,
